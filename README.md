@@ -7,6 +7,7 @@ Fucking Code 是一个面向非专业开发者的多 Agent 研发工作台。你
 它不是“一句话生成一个项目”，而是一支会轮流发言、会互相提问、会向甲方提问的 AI 研发团队。
 
 - [产品介绍](docs/product/fucking-code.md)
+- [设计论文](docs/paper/fucking-code-design-paper.md)
 - [工程基线](docs/product/fucking-code-design.md)
 - [当前完成度](#当前完成度)
 
@@ -297,5 +298,6 @@ POST /tasks/:id/work
 ## 9. 相关文档
 
 - [产品介绍](docs/product/fucking-code.md)
+- [设计论文：从提示到组织](docs/paper/fucking-code-design-paper.md)
 - [工程基线](docs/product/fucking-code-design.md)
 - [ADR-0001：OpenCode Runtime 与事件游标](docs/adr/0001-opencode-runtime.md)
