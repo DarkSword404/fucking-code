@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Orchestrator } from "@devteam/agents";
 import { EVENT_TYPES, type TurnSummary } from "@devteam/contracts";
 import {
@@ -25,7 +25,7 @@ const pausedProjects = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
-  const [pendingApprovals, pendingArtifacts, proposedDecisions] = await Promise.all([
+  const [pendingApprovals, pendingArtifacts, proposedDecisions, pendingTasks] = await Promise.all([
     db
       .select({ id: approvals.id })
       .from(approvals)
@@ -41,8 +41,23 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       .from(decisions)
       .where(and(eq(decisions.projectId, projectId), eq(decisions.status, "proposed")))
       .limit(1),
+    db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.projectId, projectId),
+          inArray(tasks.status, ["review", "testing"]),
+        ),
+      )
+      .limit(1),
   ]);
-  return pendingApprovals.length > 0 || pendingArtifacts.length > 0 || proposedDecisions.length > 0;
+  return (
+    pendingApprovals.length > 0 ||
+    pendingArtifacts.length > 0 ||
+    proposedDecisions.length > 0 ||
+    pendingTasks.length > 0
+  );
 }
 
 export async function pauseAutoDevelopment(

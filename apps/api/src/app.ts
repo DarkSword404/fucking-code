@@ -1992,6 +1992,9 @@ const BATCH_ACCEPT_KINDS = new Set([
   "plan",
   "note",
   "repo_analysis",
+  "diff",
+  "test_report",
+  "spec_review",
 ]);
 
 app.post("/api/v1/projects/:projectId/artifacts/accept-pending", async (c) => {

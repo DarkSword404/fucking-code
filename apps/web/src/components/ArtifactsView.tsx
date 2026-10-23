@@ -26,7 +26,7 @@ export function ArtifactsView() {
     allArtifacts().filter(
       (artifact) =>
         artifact.status === "in_review" &&
-        ["design", "api_contract", "plan", "note", "repo_analysis"].includes(artifact.kind),
+        ["design", "api_contract", "plan", "note", "repo_analysis", "diff", "test_report", "spec_review"].includes(artifact.kind),
     );
 
   return (

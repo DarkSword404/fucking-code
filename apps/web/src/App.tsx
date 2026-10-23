@@ -22,6 +22,7 @@ import {
   pendingDecisionCount,
   projects,
   requestAdvance,
+  resumeAutoDevelopment,
   rightOpen,
   rightWidth,
   saveProjectSettings,

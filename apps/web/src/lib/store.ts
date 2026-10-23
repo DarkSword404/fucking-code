@@ -82,7 +82,8 @@ export function pendingDecisionCount(snap: ProjectSnapshot | null = snapshot()):
   return (
     snap.approvals.filter((item) => item.status === "pending").length +
     snap.artifacts.filter((item) => item.status === "in_review").length +
-    snap.decisions.filter((item) => item.status === "proposed").length
+    snap.decisions.filter((item) => item.status === "proposed").length +
+    snap.tasks.filter((item) => ["review", "testing"].includes(item.status)).length
   );
 }
 

@@ -4,6 +4,9 @@ import {
   acceptPendingTechnicalArtifacts,
   canEditCurrentProject,
   closeDecisionInbox,
+  mergeTaskWorkspace,
+  openTaskCode,
+  updateTask,
   decideApproval,
   decideArtifact,
   decideDecision,
@@ -19,11 +22,13 @@ export function DecisionInbox() {
   const approvals = () => snap()?.approvals.filter((item) => item.status === "pending") ?? [];
   const artifacts = () => snap()?.artifacts.filter((item) => item.status === "in_review") ?? [];
   const decisions = () => snap()?.decisions.filter((item) => item.status === "proposed") ?? [];
+  const reviewTasks = () =>
+    snap()?.tasks.filter((item) => ["review", "testing"].includes(item.status)) ?? [];
   const count = () => pendingDecisionCount(snap());
   const canDecide = () => canEditCurrentProject();
   const technical = () =>
     artifacts().filter((item) =>
-      ["design", "api_contract", "plan", "note", "repo_analysis"].includes(item.kind),
+      ["design", "api_contract", "plan", "note", "repo_analysis", "diff", "test_report", "spec_review"].includes(item.kind),
     );
 
   return (
@@ -63,6 +68,63 @@ export function DecisionInbox() {
                       <button class="btn danger" onClick={() => void decideApproval(approval.id, "rejected")}>
                         驳回
                       </button>
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </Show>
+
+          <Show when={reviewTasks().length}>
+            <div class="decision-section-title">任务验收</div>
+            <For each={reviewTasks()}>
+              {(task) => (
+                <div class="decision-item">
+                  <div class="decision-item-main">
+                    <div class="decision-item-title">{task.title}</div>
+                    <div class="decision-item-meta">
+                      {task.status} · {task.roleKey ?? "未指定负责人"} · 验收标准 {task.acceptance.length} 条
+                    </div>
+                    <Show when={task.blockedReason}>
+                      <div class="decision-item-reason">{task.blockedReason}</div>
+                    </Show>
+                  </div>
+                  <Show when={canDecide()}>
+                    <div class="decision-actions">
+                      <button
+                        class="btn"
+                        onClick={() => {
+                          closeDecisionInbox();
+                          openTaskCode(task);
+                        }}
+                      >
+                        查看变更
+                      </button>
+                      <Show when={Boolean(task.evidence?.["workspaceId"])}>
+                        <button
+                          class="btn primary"
+                          onClick={() => {
+                            if (window.confirm(`验收并合并「${task.title}」？`)) {
+                              void mergeTaskWorkspace(task);
+                            }
+                          }}
+                        >
+                          验收合并
+                        </button>
+                      </Show>
+                      <Show when={!task.evidence?.["workspaceId"]}>
+                        <button
+                          class="btn"
+                          onClick={() =>
+                            void updateTask(task.id, {
+                              status: "done",
+                              expectedUpdatedAt: task.updatedAt,
+                            })
+                          }
+                        >
+                          标记完成
+                        </button>
+                      </Show>
                     </div>
                   </Show>
                 </div>
