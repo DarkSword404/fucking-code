@@ -78,7 +78,7 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
     `任务《${task.title}》执行完成。`,
     `任务状态：${task.status}。`,
     `测试：${testStatus}；规格核对：${verification?.verdict ?? "未执行"}。`,
-    "请 QA 做一次简短的验收回馈，Lead 补充下一步；只基于已有证据，不要创建新任务，不要向甲方提问。",
+    "请 QA 做一次简短的验收回馈，Lead 补充下一步；只基于已有证据，只发消息，不要创建产物、任务、审批或决策，不要向甲方提问。",
     task.blockedReason ? `当前阻塞：${task.blockedReason}` : "",
   ]
     .filter(Boolean)
@@ -177,7 +177,45 @@ export async function startTaskForProject(
         .where(eq(tasks.id, task.id))
         .limit(1);
       const failed = fresh ? ["failed", "blocked"].includes(fresh.status) : false;
-      if (failed) pausedProjects.add(project.id);
+      if (failed) {
+        pausedProjects.add(project.id);
+        if (options.auto) {
+          await getDb()
+            .update(projects)
+            .set({ autoStartTasks: false, updatedAt: new Date() })
+            .where(eq(projects.id, project.id));
+          await emit(EVENT_TYPES.projectChanged, {
+            action: "auto_paused",
+            reason: "task_failed",
+          });
+          const [room] = await getDb()
+            .select()
+            .from(rooms)
+            .where(eq(rooms.projectId, project.id))
+            .limit(1);
+          if (room) {
+            const messageId = uuidv7();
+            await insertMessage({
+              id: messageId,
+              tenantId: project.tenantId,
+              projectId: project.id,
+              roomId: room.id,
+              senderType: "system",
+              senderName: "系统",
+              type: "system_event",
+              content: `自动开发已暂停：任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}。修正问题并重新开启自动开发后再继续。`,
+              metadata: { kind: "auto_paused", taskId: task.id },
+            });
+            await emit(EVENT_TYPES.messageCreated, {
+              messageId,
+              roomId: room.id,
+              senderType: "system",
+              senderName: "系统",
+              type: "system_event",
+            });
+          }
+        }
+      }
       if (options.auto && !waitingForUser && !failed) {
         setTimeout(() => {
           void autoStartNext(project.id);

@@ -1,6 +1,6 @@
 import { For, Show, createSignal } from "solid-js";
 import { ARTIFACT_LABELS } from "@devteam/contracts";
-import { openArtifact, snapshot } from "../lib/store";
+import { acceptPendingTechnicalArtifacts, openArtifact, snapshot } from "../lib/store";
 
 const STATUS_CLASS: Record<string, string> = {
   accepted: "ok",
@@ -22,6 +22,12 @@ export function ArtifactsView() {
         .includes(query),
     );
   };
+  const pendingTechnical = () =>
+    allArtifacts().filter(
+      (artifact) =>
+        artifact.status === "in_review" &&
+        ["design", "api_contract", "plan", "note", "repo_analysis"].includes(artifact.kind),
+    );
 
   return (
     <div class="page">
@@ -35,6 +41,15 @@ export function ArtifactsView() {
             value={search()}
             onInput={(event) => setSearch(event.currentTarget.value)}
           />
+          <Show when={pendingTechnical().length}>
+            <button
+              class="btn primary"
+              title="接受设计、契约、计划、备注等技术产物；PRD、验收标准、测试报告仍需逐项确认"
+              onClick={() => void acceptPendingTechnicalArtifacts()}
+            >
+              接受技术产物 ({pendingTechnical().length})
+            </button>
+          </Show>
         </div>
 
         <Show

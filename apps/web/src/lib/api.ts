@@ -270,6 +270,11 @@ export const api = {
   artifacts: (id: string) => request<{ items: Artifact[] }>(`/projects/${id}/artifacts`),
   artifact: (projectId: string, artifactId: string) =>
     request<ArtifactWithContent>(`/projects/${projectId}/artifacts/${artifactId}`),
+  acceptPendingArtifacts: (projectId: string) =>
+    request<{ accepted: number; skipped: Array<{ kind: string; title: string }> }>(
+      `/projects/${projectId}/artifacts/accept-pending`,
+      { method: "POST" },
+    ),
   decideArtifact: (projectId: string, artifactId: string, status: "accepted" | "rejected", note?: string) =>
     request<Artifact>(`/projects/${projectId}/artifacts/${artifactId}/decision`, {
       method: "POST",

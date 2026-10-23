@@ -1948,6 +1948,55 @@ app.post("/api/v1/projects/:projectId/artifacts/:artifactId/decision", async (c)
   return c.json(updated);
 });
 
+const BATCH_ACCEPT_KINDS = new Set([
+  "design",
+  "api_contract",
+  "plan",
+  "note",
+  "repo_analysis",
+]);
+
+app.post("/api/v1/projects/:projectId/artifacts/accept-pending", async (c) => {
+  const user = c.get("user");
+  const { project } = await requireProjectEditor(c);
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(artifacts)
+    .where(and(eq(artifacts.projectId, project.id), eq(artifacts.status, "in_review")));
+  const accepted = rows.filter((artifact) => BATCH_ACCEPT_KINDS.has(artifact.kind));
+  const skipped = rows.filter((artifact) => !BATCH_ACCEPT_KINDS.has(artifact.kind));
+  const now = new Date();
+  for (const artifact of accepted) {
+    await db
+      .update(artifacts)
+      .set({ status: "accepted", updatedAt: now })
+      .where(eq(artifacts.id, artifact.id));
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.artifactChanged, {
+      artifactId: artifact.id,
+      action: "accepted",
+      kind: artifact.kind,
+      title: artifact.title,
+    });
+  }
+  if (accepted.length) {
+    await audit({
+      tenantId: project.tenantId,
+      projectId: project.id,
+      actorType: "user",
+      actorId: user.id,
+      action: "artifact.batch_accepted",
+      targetType: "project",
+      targetId: project.id,
+      detail: { artifactIds: accepted.map((artifact) => artifact.id) },
+    });
+  }
+  return c.json({
+    accepted: accepted.length,
+    skipped: skipped.map((artifact) => ({ kind: artifact.kind, title: artifact.title })),
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Decisions & approvals
 // ---------------------------------------------------------------------------

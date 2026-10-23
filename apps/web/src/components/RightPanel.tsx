@@ -1,6 +1,7 @@
 import { For, Show } from "solid-js";
 import { ARTIFACT_LABELS, PHASE_LABELS } from "@devteam/contracts";
 import {
+  acceptPendingTechnicalArtifacts,
   canEditCurrentProject,
   decideApproval,
   decideArtifact,

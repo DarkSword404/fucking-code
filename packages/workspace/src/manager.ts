@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { git, gitSafe, gitWithEnv } from "./git.js";
 
 export interface WorkspaceInfo {
@@ -24,7 +24,20 @@ export interface CommandResult {
   durationMs: number;
 }
 
-const ALLOWED_COMMANDS = new Set(["npm", "npx", "node", "git", "pnpm", "bun", "yarn"]);
+const ALLOWED_COMMANDS = new Set([
+  "npm",
+  "npx",
+  "node",
+  "git",
+  "pnpm",
+  "bun",
+  "yarn",
+  "python",
+  "python3",
+  "pytest",
+  "uv",
+  "poetry",
+]);
 const SAFE_GIT_COMMANDS = new Set([
   "status",
   "diff",
@@ -99,6 +112,19 @@ export async function createWorkspace(input: {
   await mkdir(dirname(dest), { recursive: true });
   await rm(dest, { recursive: true, force: true });
   await git(repo, ["worktree", "add", "-b", branch, dest, baseCommit]);
+  // Ignored dependency directories are not copied by `git worktree add`.
+  // Link them from the base repository so Python/Node projects can actually
+  // run their tests in the isolated worktree.
+  for (const dep of [".venv", "node_modules"]) {
+    const source = join(repo, dep);
+    const target = join(dest, dep);
+    try {
+      const info = await stat(source);
+      if (info.isDirectory()) await symlink(source, target, "dir");
+    } catch {
+      // dependency directory does not exist or is already tracked
+    }
+  }
   return { path: dest, branch, baseCommit };
 }
 
@@ -279,17 +305,29 @@ export async function writeWorkspaceFile(
 }
 
 export async function listFiles(root: string): Promise<FileEntry[]> {
-  const tracked = await gitSafe(root, ["ls-files", "-co", "--exclude-standard"]);
-  const status = await gitSafe(root, ["status", "--porcelain"]);
+  const tracked = await gitSafe(root, [
+    "-c",
+    "core.quotepath=false",
+    "ls-files",
+    "-co",
+    "--exclude-standard",
+    "-z",
+  ]);
+  const status = await gitSafe(root, [
+    "-c",
+    "core.quotepath=false",
+    "status",
+    "--porcelain",
+    "-z",
+  ]);
   const statusMap = new Map<string, string>();
-  for (const line of status.split("\n").filter(Boolean)) {
+  for (const line of status.split("\0").filter(Boolean)) {
     const code = line.slice(0, 2).trim();
-    const path = line.slice(3).trim();
+    const path = line.slice(3);
     if (path) statusMap.set(path, code || "M");
   }
   return tracked
-    .split("\n")
-    .map((p) => p.trim())
+    .split("\0")
     .filter(Boolean)
     .sort()
     .map((path) => ({ path, status: statusMap.get(path) ?? "tracked" }));
@@ -320,9 +358,8 @@ export async function readRepoFile(repoPath: string, relPath: string): Promise<s
  */
 export async function readRepoContext(repoPath: string): Promise<string> {
   const repo = await safeRepoPath(repoPath);
-  const files = (await gitSafe(repo, ["ls-files"]))
-    .split("\n")
-    .map((line) => line.trim())
+  const files = (await gitSafe(repo, ["-c", "core.quotepath=false", "ls-files", "-z"]))
+    .split("\0")
     .filter(Boolean);
   const tree = files.slice(0, 80).join("\n");
 
@@ -364,7 +401,14 @@ export async function readRepoContext(repoPath: string): Promise<string> {
 /** Stage everything in the isolated worktree, then return a reviewable diff. */
 export async function workspaceDiff(root: string): Promise<string> {
   await gitSafe(root, ["add", "-A"]);
-  return gitSafe(root, ["diff", "--cached", "--no-color", "HEAD"]);
+  return gitSafe(root, [
+    "-c",
+    "core.quotepath=false",
+    "diff",
+    "--cached",
+    "--no-color",
+    "HEAD",
+  ]);
 }
 
 export async function detectTestCommand(root: string): Promise<string | null> {
@@ -375,14 +419,29 @@ export async function detectTestCommand(root: string): Promise<string | null> {
   } catch {
     // no package.json
   }
-  const hasTests = await stat(resolve(root, "test")).then(
+  const hasNodeTests = await stat(resolve(root, "test")).then(
     (s) => s.isDirectory(),
     () => false,
   );
-  return hasTests ? "node --test" : null;
+  if (hasNodeTests) return "node --test";
+
+  const hasPythonProject = await Promise.any([
+    stat(resolve(root, "pytest.ini")).then(() => true),
+    stat(resolve(root, "pyproject.toml")).then(() => true),
+    stat(resolve(root, "tests")).then((s) => s.isDirectory()),
+    stat(resolve(root, "test")).then((s) => s.isDirectory()),
+  ]).catch(() => false);
+  if (hasPythonProject) {
+    const hasVenvPytest = await stat(resolve(root, ".venv/bin/pytest")).then(
+      () => true,
+      () => false,
+    );
+    return hasVenvPytest ? ".venv/bin/python -m pytest -q" : "python3 -m pytest -q";
+  }
+  return null;
 }
 
-function sandboxArgs(root: string, bin: string, args: string[]): string[] {
+async function sandboxArgs(root: string, bin: string, args: string[]): Promise<string[]> {
   const workspace = resolve(root);
   const out: string[] = [
     "--ro-bind",
@@ -407,25 +466,36 @@ function sandboxArgs(root: string, bin: string, args: string[]): string[] {
     "--dev",
     "/dev",
   ];
-  let current = "";
-  for (const part of dirname(workspace).split("/").filter(Boolean)) {
-    current += `/${part}`;
-    out.push("--dir", current);
-  }
+  const addDirs = (path: string) => {
+    let current = "";
+    for (const part of dirname(path).split("/").filter(Boolean)) {
+      current += `/${part}`;
+      out.push("--dir", current);
+    }
+  };
+  addDirs(workspace);
   out.push(
     "--dir",
     workspace,
     "--bind",
     workspace,
     workspace,
-    "--unshare-all",
-    "--die-with-parent",
-    "--chdir",
-    workspace,
-    "--",
-    bin,
-    ...args,
   );
+  // Dependency directories linked from the base repo (e.g. .venv) live
+  // outside the workspace. Bind them read-only so tests can run without
+  // copying hundreds of megabytes into every worktree.
+  for (const dep of [".venv", "node_modules"]) {
+    try {
+      const source = await realpath(resolve(workspace, dep));
+      if (!isInside(workspace, source)) {
+        addDirs(source);
+        out.push("--dir", source, "--ro-bind", source, source);
+      }
+    } catch {
+      // no dependency directory
+    }
+  }
+  out.push("--unshare-all", "--die-with-parent", "--chdir", workspace, "--", bin, ...args);
   return out;
 }
 
@@ -437,12 +507,13 @@ export async function runCommand(
   const started = Date.now();
   const parts = command.trim().split(/\s+/);
   const bin = parts[0] ?? "";
-  if (!ALLOWED_COMMANDS.has(bin)) {
+  const binName = basename(bin);
+  if (!ALLOWED_COMMANDS.has(binName)) {
     return {
       command,
       exitCode: null,
       status: "error",
-      output: `Command not allowed: ${bin}. Allowed: ${[...ALLOWED_COMMANDS].join(", ")}`,
+      output: `Command not allowed: ${binName}. Allowed: ${[...ALLOWED_COMMANDS].join(", ")}`,
       durationMs: 0,
     };
   }
@@ -455,7 +526,7 @@ export async function runCommand(
       durationMs: 0,
     };
   }
-  if (bin === "git" && !SAFE_GIT_COMMANDS.has(parts[1] ?? "")) {
+  if (binName === "git" && !SAFE_GIT_COMMANDS.has(parts[1] ?? "")) {
     return {
       command,
       exitCode: null,
@@ -478,9 +549,10 @@ export async function runCommand(
     };
   }
 
-  const sandbox = (process.env.SANDBOX_MODE ?? "process") === "bwrap" && bin !== "git";
+  const sandbox = (process.env.SANDBOX_MODE ?? "process") === "bwrap" && binName !== "git";
+  const spawnArgs = sandbox ? await sandboxArgs(root, bin, parts.slice(1)) : parts.slice(1);
   return new Promise<CommandResult>((resolvePromise) => {
-    const child = spawn(sandbox ? "bwrap" : bin, sandbox ? sandboxArgs(root, bin, parts.slice(1)) : parts.slice(1), {
+    const child = spawn(sandbox ? "bwrap" : bin, spawnArgs, {
       cwd: root,
       shell: false,
       env: {

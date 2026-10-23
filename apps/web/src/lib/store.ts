@@ -691,6 +691,22 @@ export function openTaskCode(task: Task): void {
   void loadCodeView();
 }
 
+export async function acceptPendingTechnicalArtifacts(): Promise<void> {
+  const id = currentId();
+  if (!id) return;
+  try {
+    const result = await api.acceptPendingArtifacts(id);
+    await refreshSnapshot();
+    toast(
+      result.accepted
+        ? `已接受 ${result.accepted} 项技术产物。`
+        : "没有可批量接受的技术产物。",
+    );
+  } catch (err) {
+    toast(messageOf(err));
+  }
+}
+
 export async function decideArtifact(
   artifactId: string,
   status: "accepted" | "rejected",
