@@ -1,0 +1,3 @@
+# Fucking Code
+
+Initializing repository...
