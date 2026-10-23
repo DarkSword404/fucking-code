@@ -2,7 +2,7 @@
 
 > 把 AI 研发团队变成你的乙方。
 
-Fucking Code 是一个面向非专业开发者的多 Agent 研发工作台。你以甲方身份在群聊里说出想解决的问题，AI 团队以乙方方式接住：先问清楚，再给建议，必要时反驳，最后交付可审查的方案、代码、测试和验收证据。
+Fucking Code 是一个以共享聊天室为核心的 AI 研发工作台。你以甲方身份在群聊里说出想解决的问题，AI 团队以乙方方式接住：先问清楚，再给建议，必要时反驳，最后交付可审查的方案、代码、测试和验收证据。**聊天室不是界面，而是组织。**
 
 它不是“一句话生成一个项目”，而是一支会轮流发言、会互相提问、会向甲方提问的 AI 研发团队。
 
@@ -298,6 +298,6 @@ POST /tasks/:id/work
 ## 9. 相关文档
 
 - [产品介绍](docs/product/fucking-code.md)
-- [设计论文：从提示到组织](docs/paper/fucking-code-design-paper.md)
+- [设计论文：聊天室即组织](docs/paper/fucking-code-design-paper.md)
 - [工程基线](docs/product/fucking-code-design.md)
 - [ADR-0001：OpenCode Runtime 与事件游标](docs/adr/0001-opencode-runtime.md)
