@@ -51,12 +51,30 @@ function isInside(root: string, target: string): boolean {
 }
 
 async function safeRepoPath(repoPath: string): Promise<string> {
-  const real = await realpath(resolve(repoPath));
+  const absolute = resolve(repoPath);
+  let real: string;
+  try {
+    real = await realpath(absolute);
+  } catch {
+    throw new Error(`repository path does not exist: ${absolute}`);
+  }
+  const info = await stat(real);
+  if (!info.isDirectory()) throw new Error(`repository path is not a directory: ${absolute}`);
   const roots = allowedRepoRoots();
   if (!roots.some((root) => isInside(root, real))) {
-    throw new Error("repository path is outside the allowed roots");
+    throw new Error(`repository path is outside ALLOWED_REPO_ROOTS: ${absolute}`);
   }
   return real;
+}
+
+/** Validate a project repo path before saving it. */
+export async function validateRepoPath(repoPath: string): Promise<void> {
+  const repo = await safeRepoPath(repoPath);
+  try {
+    await git(repo, ["rev-parse", "--is-inside-work-tree"]);
+  } catch {
+    throw new Error(`repository path is not a Git work tree: ${repo}`);
+  }
 }
 
 export async function safeWorkspacePath(root: string, relPath: string): Promise<string> {

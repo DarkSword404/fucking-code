@@ -346,6 +346,7 @@ async function finalizeWork(input: {
           reportArtifactId,
           verificationArtifactId,
           testRunId,
+          testStatus: testResult?.status ?? "not_run",
           outcome,
           toolCalls,
           verification: verification

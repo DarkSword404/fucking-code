@@ -47,6 +47,8 @@ setInterval(() => {
 }, 6 * 60 * 60 * 1000).unref();
 
 const { app } = await import("./app.js");
+const { startAutoDevelopmentLoop } = await import("./auto-dev.js");
+startAutoDevelopmentLoop();
 
 if (process.env.NODE_ENV === "production") {
   app.use("/*", async (c, next) => {

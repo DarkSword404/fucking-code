@@ -448,6 +448,8 @@ export async function loadCodeView(): Promise<void> {
         setCodeFiles([]);
         if (err instanceof ApiError && err.code === "REPO_NOT_CONFIGURED") {
           setCodeError("这个项目还没有配置仓库路径。");
+        } else if (err instanceof ApiError && err.code === "REPO_PATH_INVALID") {
+          setCodeError(err.message);
         } else if (err instanceof ApiError && (err.code === "DEMO_MODE" || err.status === 403)) {
           setCodeError("演示模式已禁用代码浏览。");
         } else if (!(err instanceof ApiError && err.status === 401)) {
@@ -596,6 +598,7 @@ export async function saveProjectSettings(patch: {
   defaultBranch?: string;
   budgetCents?: number;
   status?: "active" | "archived";
+  autoStartTasks?: boolean;
   expectedVersion?: number;
 }): Promise<boolean> {
   const id = currentId();

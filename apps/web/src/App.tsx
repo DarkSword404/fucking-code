@@ -71,6 +71,7 @@ function Workspace() {
   const [settingsStatus, setSettingsStatus] = createSignal<"active" | "archived">("active");
   const [settingsBudget, setSettingsBudget] = createSignal("0");
   const [settingsVersion, setSettingsVersion] = createSignal(0);
+  const [settingsAutoStart, setSettingsAutoStart] = createSignal(true);
   const [settingsSaving, setSettingsSaving] = createSignal(false);
   const [deleteOpen, setDeleteOpen] = createSignal(false);
   const [deleteConfirm, setDeleteConfirm] = createSignal("");
@@ -87,6 +88,7 @@ function Workspace() {
     setSettingsStatus(project.status === "archived" ? "archived" : "active");
     setSettingsBudget(String((project.budgetCents ?? 0) / 100));
     setSettingsVersion(project.version);
+    setSettingsAutoStart(project.autoStartTasks);
     setSettingsOpen(true);
   }
 
@@ -100,6 +102,7 @@ function Workspace() {
       defaultBranch: settingsBranch().trim() || "main",
       status: settingsStatus(),
       budgetCents: Math.max(0, Math.round(Number(settingsBudget() || 0) * 100)),
+      autoStartTasks: settingsAutoStart(),
       expectedVersion: settingsVersion(),
     });
     setSettingsSaving(false);
@@ -477,6 +480,20 @@ function Workspace() {
                 value={settingsBranch()}
                 onInput={(event) => setSettingsBranch(event.currentTarget.value)}
               />
+            </div>
+            <div class="field">
+              <label style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+                <input
+                  type="checkbox"
+                  checked={settingsAutoStart()}
+                  onChange={(event) => setSettingsAutoStart(event.currentTarget.checked)}
+                  style={{ width: "auto" }}
+                />
+                进入开发实现后自动启动任务
+              </label>
+              <p class="settings-note" style={{ "margin-top": "6px" }}>
+                自动启动只负责开发；代码仍需测试、规格核对和人工验收合并。
+              </p>
             </div>
             <div class="field">
               <label>项目状态</label>

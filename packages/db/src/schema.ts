@@ -85,6 +85,7 @@ export const projects = pgTable(
     baseCommit: text("base_commit"),
     budgetCents: integer("budget_cents").notNull().default(0),
     spentCents: integer("spent_cents").notNull().default(0),
+    autoStartTasks: boolean("auto_start_tasks").notNull().default(true),
     version: integer("version").notNull().default(1),
     createdAt,
     updatedAt,

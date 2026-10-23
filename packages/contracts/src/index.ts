@@ -164,6 +164,7 @@ export interface Project {
   baseCommit: string | null;
   budgetCents: number;
   spentCents: number;
+  autoStartTasks: boolean;
   createdAt: string;
   updatedAt: string;
   version: number;

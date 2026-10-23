@@ -29,6 +29,7 @@ import {
   pushWorkspaceBranch,
   removeWorkspace,
   removeWorkspaceDirectory,
+  validateRepoPath,
   verifyTaskWork,
   workspaceDiff,
   writeWorkspaceFile,
@@ -79,6 +80,7 @@ import {
   requestId,
   type AppEnv,
 } from "./http.js";
+import { autoStartNext, resumeAutoDevelopment, startTaskForProject } from "./auto-dev.js";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
 import { hashPassword, safeEqual, verifyPassword } from "./password.js";
 import { joinPresence, leavePresence, listPresence, touchPresence } from "./presence.js";
@@ -847,6 +849,17 @@ const createProjectSchema = z.object({
 app.post("/api/v1/projects", async (c) => {
   const user = c.get("user");
   const body = createProjectSchema.parse(await c.req.json());
+  if (body.repoPath) {
+    try {
+      await validateRepoPath(body.repoPath);
+    } catch (error) {
+      throw new HttpError(
+        400,
+        "REPO_PATH_INVALID",
+        `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中填写 ALLOWED_REPO_ROOTS 下的有效 Git 仓库。`,
+      );
+    }
+  }
   const project = await createProjectForUser({
     user,
     name: body.name,
@@ -885,6 +898,7 @@ const patchProjectSchema = z.object({
   defaultBranch: z.string().max(120).optional(),
   budgetCents: z.number().int().min(0).max(100_000_000).optional(),
   status: z.enum(["active", "archived"]).optional(),
+  autoStartTasks: z.boolean().optional(),
   expectedVersion: z.number().int().positive().optional(),
 });
 
@@ -902,6 +916,17 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
   if (isDemoMode() && (body.repoPath !== undefined || body.repoUrl !== undefined)) {
     throw new HttpError(403, "DEMO_MODE", "Repository settings are disabled in demo mode.");
   }
+  if (body.repoPath) {
+    try {
+      await validateRepoPath(body.repoPath);
+    } catch (error) {
+      throw new HttpError(
+        400,
+        "REPO_PATH_INVALID",
+        `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中填写 ALLOWED_REPO_ROOTS 下的有效 Git 仓库。`,
+      );
+    }
+  }
   const db = getDb();
   const { expectedVersion: _expectedVersion, ...patch } = body;
   const [updated] = await db
@@ -913,6 +938,7 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
   await projectEmitter(updated.tenantId, updated.id)(EVENT_TYPES.projectChanged, {
     action: "updated",
   });
+  if (updated.autoStartTasks) void autoStartNext(updated.id);
   return c.json(await buildSnapshot(updated));
 });
 
@@ -1344,6 +1370,7 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
       signal,
     }),
   );
+  resumeAutoDevelopment(project.id);
 
   return c.json(message, 201);
 });
@@ -1504,6 +1531,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (c) => {
     title: task!.title,
     status: "ready",
   });
+  void autoStartNext(project.id);
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
@@ -1631,6 +1659,7 @@ app.patch("/api/v1/projects/:projectId/tasks/:taskId", async (c) => {
     action: "updated",
     status: updated?.status,
   });
+  void autoStartNext(project.id);
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
@@ -2079,6 +2108,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     by: user.displayName,
     forced: Boolean(body.force),
   });
+  if (to === "build") void autoStartNext(project.id);
 
   // Entering a human-gated phase creates the approval object, so the gate is
   // actionable instead of an empty checklist item.
@@ -2197,7 +2227,11 @@ app.get("/api/v1/projects/:projectId/repo/files", async (c) => {
   try {
     return c.json({ items: await listRepoFiles(project.repoPath) });
   } catch (error) {
-    throw new HttpError(400, "REPO_LIST_FAILED", error instanceof Error ? error.message : String(error));
+    throw new HttpError(
+      400,
+      "REPO_PATH_INVALID",
+      `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中修正。`,
+    );
   }
 });
 
@@ -2214,7 +2248,11 @@ app.get("/api/v1/projects/:projectId/repo/file", async (c) => {
   try {
     return c.json({ path, content: await readRepoFile(project.repoPath, path) });
   } catch (error) {
-    throw new HttpError(400, "FILE_READ_FAILED", error instanceof Error ? error.message : String(error));
+    throw new HttpError(
+      400,
+      "REPO_PATH_INVALID",
+      `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中修正。`,
+    );
   }
 });
 
@@ -2256,55 +2294,21 @@ app.post("/api/v1/projects/:projectId/tasks/:taskId/work", async (c) => {
     );
   }
 
-  let [workspace] = await db
-    .select()
-    .from(workspaces)
-    .where(and(eq(workspaces.projectId, project.id), eq(workspaces.taskId, task.id)))
-    .limit(1);
-
-  if (!workspace) {
-    try {
-      const info = await createWorkspace({
-        repoPath: project.repoPath,
-        projectId: project.id,
-        taskId: task.id,
-      });
-      [workspace] = await db
-        .insert(workspaces)
-        .values({
-          id: uuidv7(),
-          projectId: project.id,
-          taskId: task.id,
-          path: info.path,
-          branch: info.branch,
-          baseCommit: info.baseCommit,
-          status: "ready",
-        })
-        .returning();
-    } catch (error) {
-      throw new HttpError(
-        400,
-        "WORKSPACE_CREATE_FAILED",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
-  if (!workspace) throw new HttpError(500, "WORKSPACE_CREATE_FAILED", "Workspace creation failed.");
-
-  if (!workQueue.isRunning(workspace.id)) {
-    const emit = projectEmitter(project.tenantId, project.id);
-    workQueue.enqueue(workspace.id, (signal) =>
-      runTaskWork({
-        projectId: project.id,
-        taskId: task.id,
-        workspaceId: workspace!.id,
-        emit,
-        signal,
-      }),
+  try {
+    const workspace = await startTaskForProject(project, task, {
+      auto: project.autoStartTasks,
+    });
+    return c.json({ workspace, queued: true }, 202);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new HttpError(
+      400,
+      message.includes("repository path") ? "REPO_PATH_INVALID" : "WORKSPACE_CREATE_FAILED",
+      message.includes("repository path")
+        ? `仓库路径不可用：${message}。请在项目设置中修正。`
+        : message,
     );
   }
-
-  return c.json({ workspace, queued: true }, 202);
 });
 
 app.get("/api/v1/workspaces/:workspaceId/files", async (c) => {

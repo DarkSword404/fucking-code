@@ -184,6 +184,8 @@ intake → discovery → design → planning → build → test → review → d
 ### 任务与代码
 
 - 任务看板、优先级、负责人、验收标准、依赖；
+- 进入 build 后自动启动就绪任务（可在项目设置中关闭）；
+- 每个任务完成后自动触发 QA/Lead 群聊回馈；
 - 任务编辑/删除/取消/重试；
 - 隔离 Git worktree；
 - Agent 编码会话；

@@ -360,6 +360,9 @@ export const api = {
       repoUrl?: string | null;
       defaultBranch?: string;
       budgetCents?: number;
+      autoStartTasks?: boolean;
+      status?: "active" | "archived";
+      expectedVersion?: number;
     },
   ) =>
     request<ProjectSnapshot>(`/projects/${projectId}`, {

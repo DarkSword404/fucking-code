@@ -26,6 +26,7 @@ export interface OrchestratorParams {
   repoContext?: string;
   userId: string;
   userName: string;
+  triggerLabel?: string;
   signal?: AbortSignal;
 }
 
@@ -433,7 +434,7 @@ export class Orchestrator {
     const passedSummary = new Map<string, { role: string; name: string; reason: string }>();
     const forcedNext = new Map<string, string>();
     let trigger: RoomTrigger = {
-      senderName: `甲方（${params.userName}）`,
+      senderName: params.triggerLabel ?? `甲方（${params.userName}）`,
       content: params.content,
     };
     let totalMessages = 0;

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS projects (
   base_commit TEXT,
   budget_cents INTEGER NOT NULL DEFAULT 0,
   spent_cents INTEGER NOT NULL DEFAULT 0,
+  auto_start_tasks BOOLEAN NOT NULL DEFAULT TRUE,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -320,3 +321,5 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS spec JSONB NOT NULL DEFAULT '{}'::jso
 CREATE INDEX IF NOT EXISTS idx_artifacts_project_key ON artifacts(project_id, kind, artifact_key);
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email);
 
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_start_tasks BOOLEAN NOT NULL DEFAULT TRUE;
