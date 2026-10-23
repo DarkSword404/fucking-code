@@ -2382,3 +2382,107 @@ details[open] > .file-dir::before {
     display: inline-flex;
   }
 }
+
+/* ---------------- decision inbox ---------------- */
+.decision-scrim {
+  z-index: 70;
+}
+.decision-modal {
+  width: min(760px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.decision-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.decision-head h3 {
+  margin: 0 0 2px;
+}
+.decision-head p {
+  margin: 0;
+}
+.decision-head .badge {
+  margin-left: auto;
+}
+.decision-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 6px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.decision-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.decision-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.decision-item-title {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.decision-item-meta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.decision-item-reason {
+  margin-top: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.decision-actions {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 220px;
+}
+.decision-actions .btn {
+  padding: 3px 8px;
+  font-size: 10.5px;
+}
+.decision-done {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  border-radius: 9px;
+  background: rgba(52, 211, 153, 0.05);
+}
+.decision-done-title {
+  color: #34d399;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.decision-done p {
+  margin: 5px 0 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.decision-note {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.decision-foot-note {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}

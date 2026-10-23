@@ -55,6 +55,7 @@ export const [gateError, setGateError] = createSignal<PhaseRequirement[] | null>
 export const [runs, setRuns] = createSignal<AgentRun[]>([]);
 export const [createOpen, setCreateOpen] = createSignal(false);
 export const [settingsOpen, setSettingsOpen] = createSignal(false);
+export const [decisionOpen, setDecisionOpen] = createSignal(false);
 export const [workingTaskId, setWorkingTaskId] = createSignal<string | null>(null);
 export const [turnParticipants, setTurnParticipants] = createSignal<string[] | null>(null);
 export interface PresenceUser {
@@ -70,9 +71,34 @@ let snapshotTimer: number | undefined;
 let messageTimer: number | undefined;
 let errorTimer: number | undefined;
 let codeTimer: number | undefined;
+let lastPendingDecisionCount = 0;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function pendingDecisionCount(snap: ProjectSnapshot | null = snapshot()): number {
+  if (!snap) return 0;
+  return (
+    snap.approvals.filter((item) => item.status === "pending").length +
+    snap.artifacts.filter((item) => item.status === "in_review").length +
+    snap.decisions.filter((item) => item.status === "proposed").length
+  );
+}
+
+function applySnapshot(snap: ProjectSnapshot): void {
+  setSnapshot(snap);
+  const count = pendingDecisionCount(snap);
+  if (count > 0 && lastPendingDecisionCount === 0) setDecisionOpen(true);
+  lastPendingDecisionCount = count;
+}
+
+export function openDecisionInbox(): void {
+  setDecisionOpen(true);
+}
+
+export function closeDecisionInbox(): void {
+  setDecisionOpen(false);
 }
 
 export function toast(message: string): void {
@@ -211,7 +237,7 @@ async function refreshSnapshot(): Promise<void> {
   if (!id) return;
   try {
     const snap = await api.snapshot(id);
-    if (currentId() === id) setSnapshot(snap);
+    if (currentId() === id) applySnapshot(snap);
   } catch {
     // background refresh: do not interrupt the conversation with a toast
   }
@@ -335,13 +361,16 @@ export async function loadProject(id: string): Promise<void> {
   setCurrentId(id);
   setSelectedArtifact(null);
   resetCodeState();
+  setDecisionOpen(false);
+  lastPendingDecisionCount = 0;
   setThinking([]);
   setRoomReading(false);
   setPresence([]);
   localStorage.setItem("devteam.project", id);
   try {
     const [snap, page] = await Promise.all([api.snapshot(id), api.messages(id)]);
-    setSnapshot(snap);
+    if (currentId() === id) applySnapshot(snap);
+    else setSnapshot(snap);
     setMessages(page.items);
     setRuns(snap.runs);
     lastEventSeq = snap.eventCursor ?? 0;
@@ -689,6 +718,19 @@ export function openTaskCode(task: Task): void {
   setView("code");
   setRightOpen(false);
   void loadCodeView();
+}
+
+export async function resumeAutoDevelopment(): Promise<void> {
+  const id = currentId();
+  if (!id) return;
+  try {
+    const snap = await api.startAutoDevelopment(id);
+    applySnapshot(snap);
+    setDecisionOpen(false);
+    toast("自动开发已继续。");
+  } catch (err) {
+    toast(messageOf(err));
+  }
 }
 
 export async function acceptPendingTechnicalArtifacts(): Promise<void> {

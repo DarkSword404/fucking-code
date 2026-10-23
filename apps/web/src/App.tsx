@@ -18,7 +18,8 @@ import {
   leftOpen,
   leftWidth,
   loading,
-  openRight,
+  openDecisionInbox,
+  pendingDecisionCount,
   projects,
   requestAdvance,
   rightOpen,
@@ -50,6 +51,7 @@ import { AdminView } from "./components/AdminView";
 import { CodeView } from "./components/CodeView";
 import { ProjectMembers } from "./components/ProjectMembers";
 import { ProjectMemories } from "./components/ProjectMemories";
+import { DecisionInbox } from "./components/DecisionInbox";
 
 const STATUS_CLASS: Record<string, string> = {
   accepted: "ok",
@@ -148,7 +150,7 @@ function Workspace() {
   }
 
   const snap = () => snapshot();
-  const pending = () => snap()?.approvals.filter((a) => a.status === "pending").length ?? 0;
+  const pending = () => pendingDecisionCount(snap());
   const isAdminView = () => view() === "admin";
   const isOwner = () => {
     const id = snap()?.project.id;
@@ -195,8 +197,8 @@ function Workspace() {
             </button>
           </Show>
           <Show when={pending() && !isAdminView()}>
-            <button class="btn" onClick={() => openRight("gate")}>
-              <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待审批
+            <button class="btn" onClick={openDecisionInbox}>
+              <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待决策
             </button>
           </Show>
           <Show when={!isAdminView() && canEditCurrentProject()}>
@@ -599,6 +601,8 @@ function Workspace() {
           </div>
         </div>
       </Show>
+
+      <DecisionInbox />
 
       <Show when={loading() && !snap()}>
         <div class="modal-scrim">

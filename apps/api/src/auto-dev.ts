@@ -4,6 +4,9 @@ import { EVENT_TYPES, type TurnSummary } from "@devteam/contracts";
 import {
   getDb,
   insertMessage,
+  approvals,
+  artifacts,
+  decisions,
   messages,
   projects,
   rooms,
@@ -19,6 +22,63 @@ import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.j
 
 const schedulerLocks = new Set<string>();
 const pausedProjects = new Set<string>();
+
+export async function hasPendingDecisions(projectId: string): Promise<boolean> {
+  const db = getDb();
+  const [pendingApprovals, pendingArtifacts, proposedDecisions] = await Promise.all([
+    db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(and(eq(approvals.projectId, projectId), eq(approvals.status, "pending")))
+      .limit(1),
+    db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")))
+      .limit(1),
+    db
+      .select({ id: decisions.id })
+      .from(decisions)
+      .where(and(eq(decisions.projectId, projectId), eq(decisions.status, "proposed")))
+      .limit(1),
+  ]);
+  return pendingApprovals.length > 0 || pendingArtifacts.length > 0 || proposedDecisions.length > 0;
+}
+
+export async function pauseAutoDevelopment(
+  projectId: string,
+  reason: string,
+): Promise<void> {
+  const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project || !project.autoStartTasks) return;
+  await db
+    .update(projects)
+    .set({ autoStartTasks: false, updatedAt: new Date(), version: project.version + 1 })
+    .where(eq(projects.id, projectId));
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+    action: "auto_paused",
+    reason,
+  });
+}
+
+export async function enableAutoDevelopment(projectId: string): Promise<void> {
+  if (await hasPendingDecisions(projectId)) {
+    throw new Error("还有待决策项，处理完后再继续自动开发。");
+  }
+  const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) throw new Error("project not found");
+  await db
+    .update(projects)
+    .set({ autoStartTasks: true, updatedAt: new Date(), version: project.version + 1 })
+    .where(eq(projects.id, projectId));
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+    action: "auto_resumed",
+  });
+  pausedProjects.delete(projectId);
+  await autoStartNext(projectId);
+}
 
 async function dependenciesMet(taskId: string): Promise<boolean> {
   const db = getDb();
@@ -243,6 +303,10 @@ export async function autoStartNext(projectId: string): Promise<void> {
     try {
       await validateRepoPath(project.repoPath);
     } catch {
+      return;
+    }
+    if (await hasPendingDecisions(projectId)) {
+      await pauseAutoDevelopment(projectId, "pending_decisions");
       return;
     }
 

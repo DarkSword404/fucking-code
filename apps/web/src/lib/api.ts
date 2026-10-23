@@ -216,6 +216,8 @@ export const api = {
     request<{ ok: boolean }>(`/projects/${id}/memories/${memoryId}`, { method: "DELETE" }),
   deleteProject: (id: string) =>
     request<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
+  startAutoDevelopment: (id: string) =>
+    request<ProjectSnapshot>(`/projects/${id}/auto/start`, { method: "POST" }),
   messages: (id: string, cursor?: string) =>
     request<{ items: Message[]; nextCursor: string | null }>(
       `/projects/${id}/messages${cursor ? `?cursor=${cursor}` : ""}`,

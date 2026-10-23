@@ -80,7 +80,14 @@ import {
   requestId,
   type AppEnv,
 } from "./http.js";
-import { autoStartNext, resumeAutoDevelopment, startTaskForProject } from "./auto-dev.js";
+import {
+  autoStartNext,
+  enableAutoDevelopment,
+  hasPendingDecisions,
+  pauseAutoDevelopment,
+  resumeAutoDevelopment,
+  startTaskForProject,
+} from "./auto-dev.js";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
 import { hashPassword, safeEqual, verifyPassword } from "./password.js";
 import { joinPresence, leavePresence, listPresence, touchPresence } from "./presence.js";
@@ -940,6 +947,36 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
   });
   if (updated.autoStartTasks) void autoStartNext(updated.id);
   return c.json(await buildSnapshot(updated));
+});
+
+app.post("/api/v1/projects/:projectId/auto/start", async (c) => {
+  const user = c.get("user");
+  const { project } = await requireProjectEditor(c);
+  if (!project.repoPath) {
+    throw new HttpError(400, "REPO_NOT_CONFIGURED", "Set a valid repository path before auto development.");
+  }
+  if (await hasPendingDecisions(project.id)) {
+    throw new HttpError(
+      409,
+      "PENDING_DECISIONS",
+      "还有待决策项，处理完后再继续自动开发。",
+    );
+  }
+  try {
+    await enableAutoDevelopment(project.id);
+  } catch (error) {
+    throw new HttpError(409, "AUTO_START_FAILED", error instanceof Error ? error.message : String(error));
+  }
+  await audit({
+    tenantId: project.tenantId,
+    projectId: project.id,
+    actorType: "user",
+    actorId: user.id,
+    action: "project.auto_started",
+    targetType: "project",
+    targetId: project.id,
+  });
+  return c.json(await buildSnapshot((await getDb().select().from(projects).where(eq(projects.id, project.id)).limit(1))[0]!));
 });
 
 app.delete("/api/v1/projects/:projectId", async (c) => {
@@ -1945,6 +1982,7 @@ app.post("/api/v1/projects/:projectId/artifacts/:artifactId/decision", async (c)
     targetId: artifact.id,
     detail: { note: body.note ?? null },
   });
+  await pauseAutoDevelopment(project.id, "artifact_decision");
   return c.json(updated);
 });
 
@@ -1991,6 +2029,7 @@ app.post("/api/v1/projects/:projectId/artifacts/accept-pending", async (c) => {
       detail: { artifactIds: accepted.map((artifact) => artifact.id) },
     });
   }
+  if (accepted.length) await pauseAutoDevelopment(project.id, "artifact_batch_accepted");
   return c.json({
     accepted: accepted.length,
     skipped: skipped.map((artifact) => ({ kind: artifact.kind, title: artifact.title })),
@@ -2041,6 +2080,7 @@ app.post("/api/v1/projects/:projectId/decisions/:decisionId/decide", async (c) =
     action: body.status,
     title: decision.title,
   });
+  await pauseAutoDevelopment(project.id, "decision");
   return c.json(updated);
 });
 
@@ -2100,6 +2140,7 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     targetId: approval.id,
     detail: { reason: body.reason ?? null },
   });
+  await pauseAutoDevelopment(project.id, "approval");
   return c.json(updated);
 });
 
@@ -2634,6 +2675,7 @@ app.post("/api/v1/workspaces/:workspaceId/merge", async (c) => {
       commit: merged.commit,
     },
   });
+  await pauseAutoDevelopment(project.id, "task_merged");
   return c.json(merged);
 });
 
