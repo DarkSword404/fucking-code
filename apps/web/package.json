@@ -1,0 +1,13 @@
+{
+  "name": "@devteam/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@devteam/contracts": "*",
+    "dompurify": "^3.2.3",
+    "highlight.js": "^11.12.0",
+    "marked": "^15.0.4",
+    "solid-js": "^1.9.3"
+  }
+}

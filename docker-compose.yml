@@ -1,0 +1,25 @@
+services:
+  fucking-code:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      PGDATA: /data/pg
+      WORKSPACE_ROOT: /data/worktrees
+      ALLOWED_REPO_ROOTS: /data/repos
+      DEMO_REPO_ROOT: /data/repos
+      # Local OpenCode is usually bound to 127.0.0.1; use mock in the container
+      # unless you expose the runtime on an address the container can reach.
+      AGENT_RUNTIME: ${AGENT_RUNTIME:-mock}
+      OPENCODE_URL: ${OPENCODE_URL:-http://host.docker.internal:49374}
+      AGENT_MODEL_PROVIDER: ${AGENT_MODEL_PROVIDER:-opencode-go}
+      AGENT_MODEL_ID: ${AGENT_MODEL_ID:-deepseek-v4.1-flash}
+    volumes:
+      - fucking-code-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  fucking-code-data:
