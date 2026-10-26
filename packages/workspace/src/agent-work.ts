@@ -559,6 +559,20 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     });
     if (!created.ok) throw new Error(`session create failed (${created.status}): ${created.raw.slice(0, 300)}`);
     sessionId = created.data.data.id;
+    // Persist the session id immediately so a future service restart can
+    // interrupt an orphaned OpenCode session instead of letting it keep
+    // editing the worktree in the background.
+    await db
+      .update(agentRuns)
+      .set({
+        metadata: {
+          kind: "code",
+          taskId: task.id,
+          workspaceId: workspace.id,
+          sessionId,
+        },
+      })
+      .where(eq(agentRuns.id, runId));
 
     const memoryRows = await db
       .select()
@@ -729,6 +743,12 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (sessionId) {
+      await opencodeFetch(`/api/session/${sessionId}/interrupt`, {
+        method: "POST",
+        timeoutMs: 10_000,
+      }).catch(() => undefined);
+    }
     await db
       .update(agentRuns)
       .set({ status: "failed", endedAt: new Date(), error: message.slice(0, 2000) })

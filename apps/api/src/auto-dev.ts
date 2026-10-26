@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { Orchestrator } from "@devteam/agents";
+import { Orchestrator, opencodeFetch } from "@devteam/agents";
 import {
   EVENT_TYPES,
   PHASE_LABELS,
@@ -230,8 +230,22 @@ export async function ensureProjectRepository(projectId: string): Promise<Projec
  */
 export async function recoverOrphanedTasks(): Promise<void> {
   const db = getDb();
-  // No live worker survives a process restart. Mark stale agent runs cancelled
-  // before requeueing tasks, otherwise the UI keeps showing "running" forever.
+  // No live worker survives a process restart. Stop any OpenCode session left
+  // behind before marking runs cancelled; otherwise it keeps editing the same
+  // worktree in the background while a new run starts.
+  const staleRuns = await db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.status, "running"));
+  for (const run of staleRuns) {
+    const sessionId = run.metadata?.["sessionId"];
+    if (typeof sessionId === "string" && sessionId) {
+      await opencodeFetch(`/api/session/${sessionId}/interrupt`, {
+        method: "POST",
+        timeoutMs: 10_000,
+      }).catch(() => undefined);
+    }
+  }
   await db
     .update(agentRuns)
     .set({ status: "cancelled", endedAt: new Date(), error: "服务重启，运行已中断" })
