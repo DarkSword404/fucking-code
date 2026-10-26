@@ -330,7 +330,10 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
   const orchestrator = new Orchestrator({
     runtime,
     emit,
-    maxRounds: 2,
+    // QA / Lead each need a round; an explicitly mentioned Backend (or other
+    // colleague) needs the next one. A 2-round budget silently drops that
+    // third reply and makes the user @ the agent again.
+    maxRounds: 4,
     maxSpeakersPerRound: 1,
   });
   await new Promise<void>((resolve) => {
