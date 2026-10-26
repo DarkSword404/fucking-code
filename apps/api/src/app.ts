@@ -65,9 +65,11 @@ import {
   type UserRow,
 } from "@devteam/db";
 import {
+  canTransitionPhase,
   canTransitionTask,
-  gateRequirements,
+  gateRequirementsForTransition,
   nextPhase,
+  phaseIndex,
   uuidv7,
 } from "@devteam/domain";
 import { createSession, destroySession, publicUser } from "./auth.js";
@@ -84,6 +86,7 @@ import {
   autoStartNext,
   enableAutoDevelopment,
   hasPendingDecisions,
+  nudgePhaseProposal,
   pauseAutoDevelopment,
   resumeAutoDevelopment,
   startTaskForProject,
@@ -1697,6 +1700,7 @@ app.patch("/api/v1/projects/:projectId/tasks/:taskId", async (c) => {
     status: updated?.status,
   });
   void autoStartNext(project.id);
+  if (updated?.status === "done") void nudgePhaseProposal(project.id, "task_done");
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
@@ -1983,6 +1987,7 @@ app.post("/api/v1/projects/:projectId/artifacts/:artifactId/decision", async (c)
     detail: { note: body.note ?? null },
   });
   await pauseAutoDevelopment(project.id, "artifact_decision");
+  if (body.status === "accepted") void nudgePhaseProposal(project.id, "artifact_accepted");
   return c.json(updated);
 });
 
@@ -2032,7 +2037,10 @@ app.post("/api/v1/projects/:projectId/artifacts/accept-pending", async (c) => {
       detail: { artifactIds: accepted.map((artifact) => artifact.id) },
     });
   }
-  if (accepted.length) await pauseAutoDevelopment(project.id, "artifact_batch_accepted");
+  if (accepted.length) {
+    await pauseAutoDevelopment(project.id, "artifact_batch_accepted");
+    void nudgePhaseProposal(project.id, "artifacts_batch_accepted");
+  }
   return c.json({
     accepted: accepted.length,
     skipped: skipped.map((artifact) => ({ kind: artifact.kind, title: artifact.title })),
@@ -2098,6 +2106,44 @@ app.get("/api/v1/projects/:projectId/approvals", async (c) => {
   return c.json({ items: rows });
 });
 
+async function ensurePhaseApproval(project: ProjectRow, to: WorkflowPhase, version: number) {
+  // Entering a human-gated phase creates the approval object, so the gate is
+  // actionable instead of an empty checklist item.
+  if (to !== "review" && to !== "deliver") return;
+  const db = getDb();
+  const targetType = to === "review" ? "phase_review" : "delivery";
+  const title = to === "review" ? "代码评审" : "交付审批";
+  const [existing] = await db
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.projectId, project.id),
+        eq(approvals.targetType, targetType),
+        eq(approvals.status, "pending"),
+      ),
+    )
+    .limit(1);
+  if (existing) return;
+  const approvalId = uuidv7();
+  await db.insert(approvals).values({
+    id: approvalId,
+    projectId: project.id,
+    targetType,
+    targetVersion: version,
+    title,
+    status: "pending",
+    requestedBy: "system",
+    reason: `进入${PHASE_LABELS[to]}阶段需要人工确认。`,
+  });
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.approvalChanged, {
+    approvalId,
+    action: "requested",
+    title,
+    targetType,
+  });
+}
+
 const approvalDecisionSchema = z.object({
   status: z.enum(APPROVAL_STATUSES as unknown as [string, ...string[]]),
   reason: z.string().max(2000).optional(),
@@ -2118,6 +2164,41 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     .limit(1);
   if (!approval) throw new HttpError(404, "APPROVAL_NOT_FOUND", "Approval not found.");
   if (approval.status !== "pending") throw new HttpError(409, "APPROVAL_SETTLED", "Approval already settled.");
+
+  const phasePrefix = "phase_transition:";
+  const phaseTarget = approval.targetType.startsWith(phasePrefix)
+    ? (approval.targetType.slice(phasePrefix.length) as WorkflowPhase)
+    : null;
+  if (phaseTarget && !(WORKFLOW_PHASES as readonly string[]).includes(phaseTarget)) {
+    throw new HttpError(400, "INVALID_PHASE_TARGET", "Phase proposal has an unknown target.");
+  }
+  const from = project.phase as WorkflowPhase;
+  let transitionRequirements: Awaited<ReturnType<typeof gateRequirementsForTransition>> = [];
+  if (body.status === "approved" && phaseTarget) {
+    if (!canTransitionPhase(from, phaseTarget)) {
+      throw new HttpError(
+        409,
+        "ILLEGAL_PHASE_TRANSITION",
+        `Cannot move phase from ${from} to ${phaseTarget}.`,
+      );
+    }
+    const bundle = await loadRoomBundle(project.id, (await roomFor(project)).id, 0);
+    if (!bundle) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
+    transitionRequirements = gateRequirementsForTransition(from, phaseTarget, {
+      artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+      tasks: bundle.tasks.map((t) => ({ status: t.status })),
+      approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+    });
+    if (!transitionRequirements.every((r) => r.met)) {
+      throw new HttpError(
+        409,
+        "PHASE_GATE_NOT_MET",
+        "This phase transition is not ready yet.",
+        { requirements: transitionRequirements },
+      );
+    }
+  }
+
   const [updated] = await db
     .update(approvals)
     .set({
@@ -2133,6 +2214,40 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     action: body.status,
     title: approval.title,
   });
+
+  if (body.status === "approved" && phaseTarget) {
+    const [updatedProject] = await db
+      .update(projects)
+      .set({ phase: phaseTarget, updatedAt: new Date(), version: project.version + 1 })
+      .where(eq(projects.id, project.id))
+      .returning();
+    if (!updatedProject) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.phaseChanged, {
+      from,
+      to: phaseTarget,
+      by: user.displayName,
+      agileLoop: phaseIndex(phaseTarget) <= phaseIndex(from),
+      approvalId: approval.id,
+    });
+    await ensurePhaseApproval(project, phaseTarget, updatedProject.version);
+    await audit({
+      tenantId: project.tenantId,
+      projectId: project.id,
+      actorType: "user",
+      actorId: user.id,
+      action: "phase.changed",
+      targetType: "project",
+      targetId: project.id,
+      detail: {
+        from,
+        to: phaseTarget,
+        agileLoop: phaseIndex(phaseTarget) <= phaseIndex(from),
+        approvalId: approval.id,
+        requirements: transitionRequirements,
+      },
+    });
+  }
+
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
@@ -2141,9 +2256,15 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     action: `approval.${body.status}`,
     targetType: "approval",
     targetId: approval.id,
-    detail: { reason: body.reason ?? null },
+    detail: { reason: body.reason ?? null, phaseTarget },
   });
   await pauseAutoDevelopment(project.id, "approval");
+  // A phase-transition approval already consumed the transition; do not chain
+  // straight into another phase proposal. Review/delivery approvals are
+  // different: they unlock the next forward step for the Lead to ask about.
+  if (body.status === "approved" && !phaseTarget) {
+    void nudgePhaseProposal(project.id, "approval_approved");
+  }
   return c.json(updated);
 });
 
@@ -2161,12 +2282,22 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
   const user = c.get("user");
   const { project, role } = await requireProjectEditor(c);
   const body = advanceSchema.parse(await c.req.json());
+  if (await hasPendingDecisions(project.id)) {
+    throw new HttpError(
+      409,
+      "PENDING_DECISIONS",
+      "Resolve pending decisions before changing phase; the AI proposal is the normal path.",
+    );
+  }
   const from = project.phase as WorkflowPhase;
-  const expected = nextPhase(from);
-  const to = (body.to ?? expected) as WorkflowPhase | null;
+  const to = (body.to ?? nextPhase(from)) as WorkflowPhase | null;
   if (!to) throw new HttpError(409, "WORKFLOW_COMPLETE", "Workflow is already complete.");
-  if (to !== expected) {
-    throw new HttpError(409, "ILLEGAL_PHASE_TRANSITION", `Only the next phase (${expected}) may be entered.`);
+  if (!canTransitionPhase(from, to)) {
+    throw new HttpError(
+      409,
+      "ILLEGAL_PHASE_TRANSITION",
+      `Cannot move phase from ${from} to ${to}.`,
+    );
   }
 
   const bundle = await loadRoomBundle(project.id, (await roomFor(project)).id, 0);
@@ -2176,7 +2307,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     tasks: bundle.tasks.map((t) => ({ status: t.status })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
   };
-  const requirements = gateRequirements(from, gateCtx);
+  const requirements = gateRequirementsForTransition(from, to, gateCtx);
 
   if (body.force) {
     if (!body.note) throw new HttpError(400, "FORCE_REASON_REQUIRED", "Forcing a phase change requires a note.");
@@ -2203,42 +2334,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
   });
   if (to === "build") void autoStartNext(project.id);
 
-  // Entering a human-gated phase creates the approval object, so the gate is
-  // actionable instead of an empty checklist item.
-  if (to === "review" || to === "deliver") {
-    const targetType = to === "review" ? "phase_review" : "delivery";
-    const title = to === "review" ? "代码评审" : "交付审批";
-    const [existing] = await db
-      .select({ id: approvals.id })
-      .from(approvals)
-      .where(
-        and(
-          eq(approvals.projectId, project.id),
-          eq(approvals.targetType, targetType),
-          eq(approvals.status, "pending"),
-        ),
-      )
-      .limit(1);
-    if (!existing) {
-      const approvalId = uuidv7();
-      await db.insert(approvals).values({
-        id: approvalId,
-        projectId: project.id,
-        targetType,
-        targetVersion: updated.version,
-        title,
-        status: "pending",
-        requestedBy: "system",
-        reason: `进入${PHASE_LABELS[to]}阶段需要人工确认。`,
-      });
-      await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.approvalChanged, {
-        approvalId,
-        action: "requested",
-        title,
-        targetType,
-      });
-    }
-  }
+  await ensurePhaseApproval(project, to, updated.version);
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
@@ -2247,7 +2343,13 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     action: "phase.changed",
     targetType: "project",
     targetId: project.id,
-    detail: { from, to, forced: Boolean(body.force), note: body.note ?? null },
+    detail: {
+      from,
+      to,
+      forced: Boolean(body.force),
+      note: body.note ?? null,
+      agileLoop: phaseIndex(to) <= phaseIndex(from),
+    },
   });
 
   return c.json(await buildSnapshot(updated));
@@ -2679,6 +2781,7 @@ app.post("/api/v1/workspaces/:workspaceId/merge", async (c) => {
     },
   });
   await pauseAutoDevelopment(project.id, "task_merged");
+  void nudgePhaseProposal(project.id, "task_merged");
   return c.json(merged);
 });
 

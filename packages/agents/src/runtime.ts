@@ -204,7 +204,7 @@ function mockReply(request: GenerateRequest): string {
  {"type":"create_task","title":"实现笔记列表与编辑器","description":"列表、空态、编辑保存","role":"frontend","priority":"high","acceptance":["可创建笔记","刷新后仍在"]},
  {"type":"create_task","title":"实现笔记 API 与存储","description":"CRUD、校验、迁移","role":"backend","priority":"high","acceptance":["接口幂等","错误码稳定"]},
  {"type":"create_task","title":"补齐端到端测试","description":"覆盖创建、编辑、搜索失败路径","role":"qa","priority":"medium","acceptance":["失败路径有断言"]},
- {"type":"set_phase","phase":"planning"}
+ {"type":"request_phase","phase":"planning","reason":"方案已收敛，建议进入任务拆解阶段"}
 ]}
 \`\`\``;
     case "qa":

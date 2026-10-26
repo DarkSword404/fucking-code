@@ -1,6 +1,6 @@
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { TaskStatus, WorkflowPhase } from "@devteam/contracts";
-import { EVENT_TYPES } from "@devteam/contracts";
+import { EVENT_TYPES, PHASE_LABELS } from "@devteam/contracts";
 import {
   getDb,
   artifacts,
@@ -9,17 +9,15 @@ import {
   captureAcceptedSpec,
   decisions,
   memories,
-  projects,
   tasks,
   type RoomBundle,
   type RoleRow,
 } from "@devteam/db";
 import {
   assertTaskTransition,
-  canAdvance,
+  canTransitionPhase,
   canonicalArtifactKey,
-  gateRequirements,
-  nextPhase,
+  gateRequirementsForTransition,
   uuidv7,
   type AskUserAction,
   type BlockAction,
@@ -29,6 +27,7 @@ import {
   type ProposeDecisionAction,
   type RememberAction,
   type RequestApprovalAction,
+  type RequestPhaseAction,
   type SetPhaseAction,
   type UpdateTaskAction,
   type ValidatedAgentAction,
@@ -57,16 +56,9 @@ export interface ApplyResult {
 
 const now = () => new Date();
 
-/**
- * Phase changes are applied before other actions so an agent can move the
- * project into planning and create tasks in the same turn. The transition is
- * still validated against the phase gates.
- */
+/** Phase requests are client confirmations, never direct state changes. */
 function orderedActions(actions: ValidatedAgentAction[]): ValidatedAgentAction[] {
-  return [...actions].sort((a, b) => {
-    const weight = (type: string) => (type === "set_phase" ? -1 : 0);
-    return weight(a.type) - weight(b.type);
-  });
+  return actions;
 }
 
 export async function applyActions(
@@ -85,6 +77,67 @@ export async function applyActions(
     blocked: false,
     notes: [],
   };
+
+  async function proposePhase(target: WorkflowPhase, reason: string, source: string) {
+    const from = ctx.bundle.project.phase as WorkflowPhase;
+    if (!canTransitionPhase(from, target)) {
+      result.notes.push(
+        `${source} ignored: ${from} -> ${target} is not a legal agile transition`,
+      );
+      return;
+    }
+    const gateCtx = {
+      artifacts: ctx.bundle.artifacts.map((x) => ({ kind: x.kind, status: x.status, title: x.title })),
+      tasks: ctx.bundle.tasks.map((x) => ({ status: x.status })),
+      approvals: ctx.bundle.approvals.map((x) => ({ targetType: x.targetType, status: x.status })),
+    };
+    const requirements = gateRequirementsForTransition(from, target, gateCtx);
+    if (!requirements.every((r) => r.met)) {
+      const missing = requirements.filter((r) => !r.met).map((r) => r.label).join("、");
+      result.notes.push(`${source} ignored: phase gate not met (${missing})`);
+      return;
+    }
+
+    const targetType = `phase_transition:${target}`;
+    const [existing] = await db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.projectId, ctx.bundle.project.id),
+          eq(approvals.targetType, targetType),
+          eq(approvals.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      result.notes.push(`phase proposal already pending: ${from} -> ${target}`);
+      return;
+    }
+
+    const id = uuidv7();
+    const title = `进入「${PHASE_LABELS[target]}」阶段？`;
+    const proposalReason = reason.trim() || "AI 判断当前阶段可以继续推进。";
+    await db.insert(approvals).values({
+      id,
+      projectId: ctx.bundle.project.id,
+      targetType,
+      targetId: ctx.bundle.project.id,
+      targetVersion: ctx.bundle.project.version,
+      title,
+      status: "pending",
+      requestedBy: ctx.actorRole.key,
+      reason: proposalReason,
+    });
+    result.approvalIds.push(id);
+    await ctx.emit(EVENT_TYPES.approvalChanged, {
+      approvalId: id,
+      action: "requested",
+      title,
+      targetType,
+    });
+    result.notes.push(`phase proposal created: ${from} -> ${target} (waiting for client)`);
+  }
 
   for (const action of orderedActions(actions)) {
     try {
@@ -387,33 +440,21 @@ export async function applyActions(
           break;
         }
 
+        case "request_phase": {
+          const a = action as RequestPhaseAction;
+          await proposePhase(a.phase as WorkflowPhase, a.reason, "request_phase");
+          break;
+        }
+
         case "set_phase": {
           const a = action as SetPhaseAction;
-          const from = ctx.bundle.project.phase as WorkflowPhase;
-          const expected = nextPhase(from);
-          if (expected !== a.phase) {
-            result.notes.push(`phase action ignored: ${from} -> ${a.phase} is not the next legal step`);
-            break;
-          }
-          const gateCtx = {
-            artifacts: ctx.bundle.artifacts.map((x) => ({ kind: x.kind, status: x.status, title: x.title })),
-            tasks: ctx.bundle.tasks.map((x) => ({ status: x.status })),
-            approvals: ctx.bundle.approvals.map((x) => ({ targetType: x.targetType, status: x.status })),
-          };
-          if (!canAdvance(from, gateCtx)) {
-            const missing = gateRequirements(from, gateCtx)
-              .filter((r) => !r.met)
-              .map((r) => r.label)
-              .join("、");
-            result.notes.push(`phase action ignored: gate not met (${missing})`);
-            break;
-          }
-          await db
-            .update(projects)
-            .set({ phase: a.phase, updatedAt: now(), version: ctx.bundle.project.version + 1 })
-            .where(eq(projects.id, ctx.bundle.project.id));
-          ctx.bundle.project.phase = a.phase;
-          await ctx.emit(EVENT_TYPES.phaseChanged, { from, to: a.phase, by: ctx.actorRole.key });
+          // Older prompts emitted set_phase. Treat it as a proposal so an
+          // agent can never bypass the client's phase confirmation.
+          await proposePhase(
+            a.phase as WorkflowPhase,
+            a.reason ?? "AI 建议推进到下一阶段。",
+            "set_phase (legacy)",
+          );
           break;
         }
 

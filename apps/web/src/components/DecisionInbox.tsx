@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { ARTIFACT_LABELS } from "@devteam/contracts";
+import { ARTIFACT_LABELS, PHASE_LABELS } from "@devteam/contracts";
 import {
   acceptPendingTechnicalArtifacts,
   canEditCurrentProject,
@@ -20,6 +20,12 @@ import {
 export function DecisionInbox() {
   const snap = () => snapshot();
   const approvals = () => snap()?.approvals.filter((item) => item.status === "pending") ?? [];
+  const phaseTargetOf = (targetType: string): string | null =>
+    targetType.startsWith("phase_transition:")
+      ? targetType.slice("phase_transition:".length)
+      : null;
+  const phaseApprovals = () => approvals().filter((item) => phaseTargetOf(item.targetType));
+  const otherApprovals = () => approvals().filter((item) => !phaseTargetOf(item.targetType));
   const artifacts = () => snap()?.artifacts.filter((item) => item.status === "in_review") ?? [];
   const decisions = () => snap()?.decisions.filter((item) => item.status === "proposed") ?? [];
   const reviewTasks = () =>
@@ -46,9 +52,45 @@ export function DecisionInbox() {
             </button>
           </div>
 
-          <Show when={approvals().length}>
+          <Show when={phaseApprovals().length}>
+            <div class="decision-section-title">阶段确认</div>
+            <For each={phaseApprovals()}>
+              {(approval) => {
+                const target = () => phaseTargetOf(approval.targetType);
+                return (
+                  <div class="decision-item phase-decision">
+                    <div class="decision-item-main">
+                      <div class="decision-item-title">{approval.title}</div>
+                      <div class="decision-item-meta">
+                        AI 阶段提议 · 由 {approval.requestedBy ?? "团队"} 发起 · 批准后进入「
+                        {target() ? PHASE_LABELS[target()! as keyof typeof PHASE_LABELS] ?? target() : "下一阶段"}」
+                      </div>
+                      <Show when={approval.reason}>
+                        <div class="decision-item-reason">{approval.reason}</div>
+                      </Show>
+                    </div>
+                    <Show when={canDecide()}>
+                      <div class="decision-actions">
+                        <button class="btn primary" onClick={() => void decideApproval(approval.id, "approved")}>
+                          进入阶段
+                        </button>
+                        <button class="btn danger" onClick={() => void decideApproval(approval.id, "rejected")}>
+                          保持当前
+                        </button>
+                      </div>
+                    </Show>
+                  </div>
+                );
+              }}
+            </For>
+            <div class="decision-note">
+              AI 只负责提议和说明理由；你批准后才会推进。阶段推进不会自动开跑，仍需你点「继续自动开发」。
+            </div>
+          </Show>
+
+          <Show when={otherApprovals().length}>
             <div class="decision-section-title">审批</div>
-            <For each={approvals()}>
+            <For each={otherApprovals()}>
               {(approval) => (
                 <div class="decision-item">
                   <div class="decision-item-main">

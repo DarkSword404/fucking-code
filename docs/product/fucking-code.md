@@ -97,7 +97,8 @@ Fucking Code 反过来做：
 - PRD / 验收标准 / 技术方案需要接受；
 - 代码任务必须通过测试和规格核对；
 - 验收合并是人工动作；
-- 阶段推进有门禁，强制推进需要理由并写入审计。
+- 阶段由 AI 提议、甲方确认；批准后才推进，回退/循环也要说明理由；
+- 手动推进只作为负责人兜底，且有待决策项时不可用。
 
 ---
 
@@ -149,8 +150,13 @@ Backend / Frontend 在隔离 worktree 实现
 ### 研发阶段
 
 ```text
-intake → discovery → design → planning → build → test → review → deliver → done
+主链：intake → discovery → design → planning → build → test → review → deliver → done
+循环：test → build；review → build；build → planning；deliver / done → planning / discovery
 ```
+
+阶段不是单向流水线。AI 根据产物、任务和测试证据判断下一步：进入下一阶段、回退返工，
+还是交付后开始新一轮。AI 会用 `request_phase` 向甲方发起确认，甲方在弹窗中批准后才推进；
+自动开发不会因为一次阶段批准就自己继续跑。
 
 每个阶段都有门禁：
 

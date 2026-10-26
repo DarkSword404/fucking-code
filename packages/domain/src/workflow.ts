@@ -14,14 +14,34 @@ export function phaseIndex(phase: WorkflowPhase): number {
 }
 
 /**
+ * Agile phase graph. Forward edges are gated; backward/iteration edges are
+ * explicit loops that require a human-confirmed reason.
+ */
+export const PHASE_TRANSITIONS: Record<WorkflowPhase, WorkflowPhase[]> = {
+  intake: ["discovery"],
+  discovery: ["discovery", "design", "planning"],
+  design: ["design", "discovery", "planning"],
+  planning: ["planning", "design", "build"],
+  build: ["build", "planning", "test"],
+  test: ["test", "build", "review"],
+  review: ["review", "test", "build", "deliver"],
+  deliver: ["deliver", "planning", "done"],
+  done: ["discovery", "planning"],
+};
+
+export function canTransitionPhase(from: WorkflowPhase, to: WorkflowPhase): boolean {
+  return from !== to && (PHASE_TRANSITIONS[from]?.includes(to) ?? false);
+}
+
+/**
  * Transition rules are data, not prompt text. The API refuses illegal moves;
  * a human owner may force a move only with a recorded reason (audited).
  */
 export function assertTransition(from: WorkflowPhase, to: WorkflowPhase): void {
-  if (from === to) return;
-  const allowed = nextPhase(from);
-  if (allowed !== to) {
-    throw new Error(`Illegal phase transition: ${from} -> ${to} (allowed: ${allowed ?? "none"})`);
+  if (!canTransitionPhase(from, to)) {
+    throw new Error(
+      `Illegal phase transition: ${from} -> ${to} (allowed: ${PHASE_TRANSITIONS[from]?.join(", ") ?? "none"})`,
+    );
   }
 }
 
@@ -123,6 +143,21 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
     default:
       return [];
   }
+}
+
+export function gateRequirementsForTransition(
+  from: WorkflowPhase,
+  to: WorkflowPhase,
+  ctx: PhaseGateContext,
+): GateRequirement[] {
+  if (!canTransitionPhase(from, to)) {
+    return [{ key: "legal_transition", label: "阶段转移合法", met: false }];
+  }
+  // Forward moves must satisfy the current phase gate. Backward moves and
+  // iteration loops (e.g. test -> build, done -> planning) are allowed when
+  // the client confirms, because they represent rework or a new sprint.
+  if (phaseIndex(to) <= phaseIndex(from)) return [];
+  return gateRequirements(from, ctx);
 }
 
 export function canAdvance(phase: WorkflowPhase, ctx: PhaseGateContext): boolean {

@@ -28,6 +28,8 @@ export interface OrchestratorParams {
   userName: string;
   triggerLabel?: string;
   readOnly?: boolean;
+  /** Only allow phase proposals; used by the phase steward turn. */
+  phaseOnly?: boolean;
   signal?: AbortSignal;
 }
 
@@ -45,6 +47,7 @@ function messageTypeFor(actions: ValidatedAgentAction[]): MessageType {
   if (actions.some((a) => a.type === "create_artifact")) return "artifact";
   if (actions.some((a) => a.type === "create_task")) return "task_handoff";
   if (actions.some((a) => a.type === "propose_decision")) return "decision";
+  if (actions.some((a) => a.type === "request_phase" || a.type === "set_phase")) return "question";
   if (actions.some((a) => a.type === "block")) return "blocker";
   if (actions.some((a) => a.type === "ask_user")) return "question";
   return "discussion";
@@ -70,8 +73,9 @@ function actionChips(actions: ValidatedAgentAction[]): Array<{ kind: string; lab
       case "remember":
         chips.push({ kind: "memory", label: `记忆候选：${String(a.title ?? "")}` });
         break;
+      case "request_phase":
       case "set_phase":
-        chips.push({ kind: "phase", label: `阶段 → ${String(a.phase ?? "")}` });
+        chips.push({ kind: "phase", label: `阶段提议：${String(a.phase ?? "")}（待甲方确认）` });
         break;
       case "handoff":
         chips.push({ kind: "handoff", label: `交给 @${String(a.to ?? "")}` });
@@ -695,7 +699,12 @@ export class Orchestrator {
           }
 
           const result = item.result;
-          const actions = params.readOnly ? [] : (result.actions as ValidatedAgentAction[]);
+          let actions = params.readOnly ? [] : (result.actions as ValidatedAgentAction[]);
+          if (params.phaseOnly) {
+            actions = actions.filter(
+              (action) => action.type === "request_phase" || action.type === "set_phase",
+            );
+          }
           const parseErrors = (result.metadata.parseErrors as string[] | undefined) ?? [];
           if (parseErrors.length) {
             const raw = (result.metadata.rawBlocks as string[] | undefined) ?? [];

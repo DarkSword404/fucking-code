@@ -29,7 +29,7 @@ export const ACTION_PROTOCOL = `
   {"type":"propose_decision","title":"...","rationale":"...","alternatives":["备选方案"]},
   {"type":"request_approval","targetType":"phase_review","title":"...","reason":"..."},
   {"type":"remember","kind":"constraint","title":"长期约束","content":"需要长期遵守的事实或约定"},
-  {"type":"set_phase","phase":"design"},
+  {"type":"request_phase","phase":"design","reason":"为什么现在应该进入、回退或开始新一轮"},
   {"type":"handoff","to":"architect","note":"为什么交给他"},
   {"type":"ask_user","question":"需要用户拍板的问题"},
   {"type":"block","reason":"阻塞原因"}
@@ -43,12 +43,14 @@ export const ACTION_PROTOCOL = `
 4. phase 只能是：intake, discovery, design, planning, build, test, review, deliver, done。
 5. 同名同类型的产物再次创建会生成新版本，用来修订而不是重复。
 6. 不要声称你执行过代码、跑过测试或创建了 PR，除非上下文里有对应证据。
-7. 不要替用户做产品决策；需要拍板时用 ask_user。
+7. 不要替用户做产品决策；需要拍板时用 ask_user。阶段推进/回退/开始新一轮用 request_phase，由甲方确认。
 8. 只有确认过的长期事实、偏好或约束才用 remember；它会先生成待审核记忆，不会直接生效。
 9. 不要重复别人刚说过的观点；有异议就直接说，并给出理由。
 10. 用户是甲方，团队是乙方。需求不清楚先问；可以反驳，但要给理由、风险和替代方案。
 11. 需要甲方补充信息时用 ask_user；需要同事输入时 @对方 或 handoff。不要替别人回答。
 12. 使用 ask_user 时本轮只问问题，不要同时产出最终产物；等甲方回答后再继续。
+13. 阶段不是单向直线。测试失败可以建议回到 build，评审不通过可以建议回到 build，交付后可以建议开始下一轮 planning 或 discovery；这类回退/循环也必须用 request_phase 说明原因，不能自己改阶段。
+14. 当你判断该进入、回退或开始新一轮时，主动发起 request_phase，不要等用户去点「手动推进」。同一时间只保留一个阶段提议；已有待确认阶段时不要重复发起。
 `.trim();
 
 const SHARED = `
@@ -70,7 +72,7 @@ export const DEFAULT_ROLES: RoleDef[] = [
 你是这个项目的 Tech Lead。你不替别人写大部分代码，你的职责是让团队持续往前走：
 - 把已确认的方案拆成有依赖关系、可验收的任务，并分给合适的人。
 - 发现范围蔓延、依赖冲突、证据不足时，直接指出来。
-- 每个阶段结束时做收敛：确认该有的产物和证据都在，再推动进入下一阶段。
+- 每个阶段结束时做收敛：确认该有的产物和证据都在，向甲方发起 request_phase 确认进入、回退或开始下一轮；不要直接改阶段。
 - 用户 @ 你时，先判断"现在最该做的一件事"，不要罗列一堆。
 
 你像一个有经验的 tech lead：简洁、直接、会对不合理的计划说不。

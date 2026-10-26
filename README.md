@@ -32,9 +32,10 @@ Fucking Code 是一个以共享聊天室为核心的 AI 研发工作台。你以
 - **真实模型驱动**：默认调用本机 OpenCode Server 的模型（已验证 `opencode-go/deepseek-v4.1-flash`）。
   也可以用 `AGENT_RUNTIME=mock` 离线跑完整流程。
 - **聊天 → 结构化状态**：Agent 通过受控的 `devteam` JSON 动作块创建任务、产物、决策、审批、
-  阶段变更和交接。服务端逐条校验，提示词不是权限边界。
-- **完整研发阶段机**：`intake → discovery → design → planning → build → test → review → deliver → done`，
-  每个阶段有门禁；门禁未满足时只能由项目负责人填写理由强制推进，并写入审计。
+  阶段提议和交接。服务端逐条校验，提示词不是权限边界。
+- **AI 主导的敏捷阶段机**：AI 根据证据判断该进入、回退还是开始新一轮，通过弹窗向甲方发起
+  阶段确认；甲方批准后服务端才推进。阶段图允许 `test → build`、`review → build`、`done → planning`
+  等循环，不把研发压成单向流水线。手动推进只作为负责人兜底。
 - **版本化产物**：PRD、验收标准、技术方案、API 契约、测试报告、Diff 都有版本历史，可接受/退回。
 - **真实代码执行**：从任务创建隔离 Git worktree，启动 OpenCode 编码会话，让 Agent 改代码、
   跑测试，然后把 Diff 和测试报告作为产物归档，任务进入 `review`。
@@ -163,7 +164,7 @@ DEMO_MESSAGES_PER_DAY=200
 ```sh
 npm run dev            # API + Web（API 8787，Web 5174）
 npm run typecheck      # TypeScript 全量检查
-npm test               # 单元测试（38 个）
+npm test               # 单元测试（41 个）
 npm run build          # 构建 Web
 npm start              # 生产模式，API 同时托管 apps/web/dist
 npm run user:password  # 设置 seed 账号密码，例如 npm run user:password -- 'new-pass'
@@ -175,16 +176,19 @@ npm run db:reset       # 清空本地数据库（下次启动重新 seed）
 1. 打开 **Acme Notes**，在聊天室说：
    > 我想做一个支持 Markdown、标签和全文搜索的笔记应用，先帮我理清需求和验收标准。
 2. PM 会追问最多一轮，然后产出 **PRD** 和 **验收标准**。
-3. 右侧「门禁」→「待确认产物」里查看并接受；点顶部「下一阶段」进入 `design`。
-4. `@Architect 基于 PRD 出技术方案和接口契约`。接受方案，进入 `planning`。
+3. 右侧「门禁」→「待确认产物」里查看并接受。门禁满足后，AI 会主动发起「是否进入方案设计」的
+   阶段确认；在弹窗里批准即可。正常流程不需要你点「手动推进」。
+4. `@Architect 基于 PRD 出技术方案和接口契约`。接受方案后，AI 会再发起进入 `planning` 的确认。
 5. `@Lead 把方案拆成任务，前后端并行，QA 在接口稳定后介入`。Lead 会创建带负责人和验收标准的任务。
 6. 在「开发任务」里对任意任务点 **开始工作**。系统会：
    - 从 `repoPath` 创建隔离 worktree 和 `devteam/...` 分支；
    - 启动 OpenCode 编码会话（带工具、限权）；
    - 运行项目测试；
    - 归档 **Diff** 和 **测试报告**，任务进入 `review`。
-7. 点任务上的 **查看变更** 审查 Diff；接受产物后推进阶段。
+7. 点任务上的 **查看变更** 审查 Diff；验收合并后，AI 会判断是否进入测试或回退返工。
 8. `review` / `deliver` 阶段会自动生成待审批项，人工批准后才能继续。
+9. 敏捷循环也走同一套确认：测试失败可以回 `build`，评审不通过可以回 `build`，交付后可以开始
+   下一轮 `planning` / `discovery`。AI 提议、甲方确认、自动开发保持暂停，直到你点「继续自动开发」。
 
 > 示例仓库里的 `list({tag})` 和 `search()` 是故意留空的，配套测试会失败，正好给 Agent 一个
 > 真实的编码任务。
@@ -255,6 +259,7 @@ POST /tasks/:id/work
 - **事件游标**：`events.seq`（BIGSERIAL）是唯一游标。OpenCode 的事件流是 live-only，不能作为恢复游标。
 - **任务状态**：`proposed → ready → in_progress → review/testing → done`，非法跃迁返回 409。
 - **阶段门禁**：
+  - 阶段由 AI 提议、甲方确认；允许前进、回退和迭代循环，非法跳阶段返回 409
   - discovery：PRD 已接受 + 验收标准存在
   - design：技术方案已接受
   - planning：至少 1 个任务
@@ -284,7 +289,7 @@ POST /tasks/:id/work
 
 | 原文档 Epic | 状态 | 说明 |
 |---|---|---|
-| E01 工程底座 | ✅ | Monorepo、类型检查、38 个测试、构建、内嵌 PG、seed、登录/会话 |
+| E01 工程底座 | ✅ | Monorepo、类型检查、41 个测试、构建、内嵌 PG、seed、登录/会话 |
 | E02 项目与聊天室 | ✅ | 多项目、成员角色、消息、引用、SSE 游标恢复、三栏 UI |
 | E03 长期记忆 | ✅ | 候选提取、审核、去重、接受后注入、180 天自动衰减 |
 | E04 Runtime 验证 | ✅ | OpenCode V2 讨论 + 编码会话，见 ADR-0001 |

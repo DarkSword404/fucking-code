@@ -124,6 +124,7 @@ export const AGENT_ACTIONS = [
   "propose_decision",
   "request_approval",
   "remember",
+  "request_phase",
   "set_phase",
   "handoff",
   "ask_user",

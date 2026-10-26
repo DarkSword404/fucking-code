@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { canTransitionTask, gateRequirements, nextPhase, parseAgentOutput } from "@devteam/domain";
+import {
+  canTransitionPhase,
+  canTransitionTask,
+  gateRequirements,
+  gateRequirementsForTransition,
+  nextPhase,
+  parseAgentOutput,
+} from "@devteam/domain";
 
 describe("agent action protocol", () => {
   test("repairs raw newlines and quotes inside artifact content", () => {
@@ -37,6 +44,18 @@ describe("agent action protocol", () => {
     const parsed = parseAgentOutput('```devteam\n{"actions":[{"type":"drop_database"}]}\n```');
     expect(parsed.actions).toHaveLength(0);
     expect(parsed.errors.length).toBeGreaterThan(0);
+  });
+
+  test("parses a client-confirmed phase proposal", () => {
+    const parsed = parseAgentOutput(
+      '```devteam\n{"actions":[{"type":"request_phase","phase":"build","reason":"设计已确认，任务已拆好"}]}\n```',
+    );
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.actions[0]).toMatchObject({
+      type: "request_phase",
+      phase: "build",
+      reason: "设计已确认，任务已拆好",
+    });
   });
 
   test("accepts long-term memory candidates", () => {
@@ -119,5 +138,24 @@ describe("workflow gates", () => {
     expect(nextPhase("intake")).toBe("discovery");
     expect(nextPhase("deliver")).toBe("done");
     expect(nextPhase("done")).toBeNull();
+  });
+
+  test("supports agile loops without allowing arbitrary skips", () => {
+    expect(canTransitionPhase("build", "test")).toBe(true);
+    expect(canTransitionPhase("test", "build")).toBe(true);
+    expect(canTransitionPhase("review", "build")).toBe(true);
+    expect(canTransitionPhase("deliver", "planning")).toBe(true);
+    expect(canTransitionPhase("done", "planning")).toBe(true);
+    expect(canTransitionPhase("done", "discovery")).toBe(true);
+    expect(canTransitionPhase("intake", "design")).toBe(false);
+    expect(canTransitionPhase("build", "review")).toBe(false);
+    expect(canTransitionPhase("build", "build")).toBe(false);
+  });
+
+  test("forward transitions keep the gate, rework loops do not", () => {
+    const missing = gateRequirementsForTransition("discovery", "design", empty);
+    expect(missing.some((r) => !r.met)).toBe(true);
+    expect(gateRequirementsForTransition("test", "build", empty)).toEqual([]);
+    expect(gateRequirementsForTransition("review", "build", empty)).toEqual([]);
   });
 });

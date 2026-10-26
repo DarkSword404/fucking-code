@@ -1,12 +1,18 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { Orchestrator } from "@devteam/agents";
-import { EVENT_TYPES, type TurnSummary } from "@devteam/contracts";
+import {
+  EVENT_TYPES,
+  PHASE_LABELS,
+  type TurnSummary,
+  type WorkflowPhase,
+} from "@devteam/contracts";
 import {
   getDb,
   insertMessage,
   approvals,
   artifacts,
   decisions,
+  loadRoomBundle,
   messages,
   projects,
   rooms,
@@ -16,12 +22,19 @@ import {
   type ProjectRow,
   type TaskRow,
 } from "@devteam/db";
-import { uuidv7 } from "@devteam/domain";
+import {
+  canTransitionPhase,
+  gateRequirementsForTransition,
+  nextPhase,
+  uuidv7,
+} from "@devteam/domain";
 import { createWorkspace, runTaskWork, validateRepoPath } from "@devteam/workspace";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
 
 const schedulerLocks = new Set<string>();
 const pausedProjects = new Set<string>();
+const phaseNudgeLocks = new Set<string>();
+const lastPhaseNudge = new Map<string, number>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
@@ -58,6 +71,106 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
     proposedDecisions.length > 0 ||
     pendingTasks.length > 0
   );
+}
+
+/**
+ * When a gate becomes satisfied (e.g. the client accepts the PRD or merges the
+ * last task), give the Lead one narrow turn to decide whether to ask the
+ * client to enter/loop a phase. The turn may only emit request_phase; it cannot
+ * create tasks, artifacts, approvals or change task state.
+ */
+export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
+  if (phaseNudgeLocks.has(projectId)) return;
+  const last = lastPhaseNudge.get(projectId) ?? 0;
+  if (Date.now() - last < 60_000) return;
+  phaseNudgeLocks.add(projectId);
+  try {
+    const db = getDb();
+    const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.status === "archived") return;
+    const from = project.phase as WorkflowPhase;
+    const next = nextPhase(from);
+    if (!next || !canTransitionPhase(from, next)) return;
+    if (await hasPendingDecisions(projectId)) return;
+
+    const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
+    if (!room || roomQueue.isRunning(room.id)) return;
+    const workspaceRows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.projectId, projectId));
+    if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
+
+    const bundle = await loadRoomBundle(project.id, room.id, 0);
+    if (!bundle) return;
+    const requirements = gateRequirementsForTransition(from, next, {
+      artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+      tasks: bundle.tasks.map((t) => ({ status: t.status })),
+      approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+    });
+    if (!requirements.every((r) => r.met)) return;
+
+    lastPhaseNudge.set(projectId, Date.now());
+    const messageId = uuidv7();
+    const content = [
+      "阶段门禁已经满足。",
+      `当前阶段：${PHASE_LABELS[from]}；可提议的下一阶段：${PHASE_LABELS[next]}。`,
+      "请 Lead 只判断是否发起阶段确认：如果证据足够，用 request_phase 向甲方提问并说明理由；如果还不该推进，就直接说明原因。",
+      "不要创建产物、任务、审批或修改任务状态；只允许发起一个阶段提议。",
+    ].join("\n");
+    await insertMessage({
+      id: messageId,
+      tenantId: project.tenantId,
+      projectId: project.id,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+      content,
+      metadata: { kind: "phase_gate", from, next, trigger },
+    });
+    const emit = projectEmitter(project.tenantId, project.id);
+    await emit(EVENT_TYPES.messageCreated, {
+      messageId,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+    });
+
+    const orchestrator = new Orchestrator({
+      runtime,
+      emit,
+      maxRounds: 1,
+      maxSpeakersPerRound: 1,
+      maxMessagesPerTurn: 1,
+    });
+    await new Promise<void>((resolve) => {
+      roomQueue.enqueue(room.id, async (signal) => {
+        try {
+          await orchestrator.run({
+            projectId: project.id,
+            roomId: room.id,
+            userMessageId: messageId,
+            content,
+            mentions: ["lead"],
+            participantKeys: ["lead"],
+            userName: "系统",
+            triggerLabel: "系统（阶段门禁）",
+            phaseOnly: true,
+            userId: project.tenantId,
+            signal,
+          });
+        } finally {
+          resolve();
+        }
+      });
+    });
+  } catch (error) {
+    console.error("[auto-dev] phase proposal nudge failed", error);
+  } finally {
+    phaseNudgeLocks.delete(projectId);
+  }
 }
 
 export async function pauseAutoDevelopment(
@@ -149,11 +262,14 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
   const evidence = (task.evidence ?? {}) as Record<string, unknown>;
   const verification = evidence["verification"] as { verdict?: string } | undefined;
   const testStatus = String(evidence["testStatus"] ?? "unknown");
+  const allowPhaseProposal = ["failed", "blocked"].includes(task.status);
   const content = [
     `任务《${task.title}》执行完成。`,
     `任务状态：${task.status}。`,
     `测试：${testStatus}；规格核对：${verification?.verdict ?? "未执行"}。`,
-    "请 QA 做一次简短的验收回馈，Lead 补充下一步；只基于已有证据，只发消息，不要创建产物、任务、审批或决策，不要向甲方提问。",
+    allowPhaseProposal
+      ? "请 QA 做一次简短的验收回馈，Lead 补充下一步；如果失败/阻塞暴露了需要返工或重新规划，用 request_phase 向甲方提议回到 build 或 planning 并说明理由。不要创建其他产物、任务、审批或决策，不要向甲方提问。"
+      : "请 QA 做一次简短的验收回馈，Lead 补充下一步；只基于已有证据，只发消息，不要创建产物、任务、审批或决策，不要向甲方提问。",
     task.blockedReason ? `当前阻塞：${task.blockedReason}` : "",
   ]
     .filter(Boolean)
@@ -198,7 +314,8 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
           participantKeys: ["qa", "lead"],
           userName: "系统",
           triggerLabel: "系统（任务回执）",
-          readOnly: true,
+          readOnly: !allowPhaseProposal,
+          phaseOnly: allowPhaseProposal,
           userId: project.tenantId,
           signal,
         });

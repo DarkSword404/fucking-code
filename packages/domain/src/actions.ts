@@ -75,6 +75,13 @@ const remember = z.object({
   content: z.string().min(1).max(4000),
 });
 
+const requestPhase = z.object({
+  type: z.literal("request_phase"),
+  phase,
+  reason: z.string().min(1).max(2000),
+});
+
+/** Legacy action kept parseable, but applyActions turns it into a client confirmation. */
 const setPhase = z.object({
   type: z.literal("set_phase"),
   phase,
@@ -104,6 +111,7 @@ export const agentActionSchema = z.discriminatedUnion("type", [
   proposeDecision,
   requestApproval,
   remember,
+  requestPhase,
   setPhase,
   handoff,
   askUser,
@@ -120,6 +128,7 @@ export type CreateArtifactAction = z.infer<typeof createArtifact>;
 export type ProposeDecisionAction = z.infer<typeof proposeDecision>;
 export type RequestApprovalAction = z.infer<typeof requestApproval>;
 export type RememberAction = z.infer<typeof remember>;
+export type RequestPhaseAction = z.infer<typeof requestPhase>;
 export type SetPhaseAction = z.infer<typeof setPhase>;
 export type HandoffAction = z.infer<typeof handoff>;
 export type AskUserAction = z.infer<typeof askUser>;

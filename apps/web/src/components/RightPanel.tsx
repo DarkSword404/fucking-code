@@ -120,7 +120,7 @@ export function RightPanel() {
 
           <Show when={snap()?.nextPhase}>
             <div class="gate-note">
-              下一阶段：{PHASE_LABELS[snap()!.nextPhase!]}。门禁未满足时，需要项目负责人填写理由后才能强制推进（会写入审计）。
+              下一阶段：{PHASE_LABELS[snap()!.nextPhase!]}。正常由 AI 在门禁满足后发起阶段提议、你确认；手动推进只作为负责人兜底。敏捷循环（测试失败回 build、交付后开新一轮）也走同一确认流程。
             </div>
           </Show>
 

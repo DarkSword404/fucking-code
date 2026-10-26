@@ -202,9 +202,13 @@ function Workspace() {
               <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待决策
             </button>
           </Show>
-          <Show when={!isAdminView() && canEditCurrentProject()}>
-            <button class="btn primary" onClick={requestAdvance} title="进入下一阶段">
-              下一阶段 →
+          <Show when={!isAdminView() && !pending() && canEditCurrentProject()}>
+            <button
+              class="btn"
+              onClick={requestAdvance}
+              title="负责人兜底：手动推进到下一阶段；正常流程由 AI 提议并经你确认"
+            >
+              手动推进 →
             </button>
           </Show>
           <button class="icon-btn" title="切换右侧面板" onClick={() => setRightOpen(!rightOpen())}>
