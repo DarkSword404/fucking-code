@@ -619,6 +619,15 @@ export async function mergeTaskWorkspace(task: Task): Promise<boolean> {
     toast("这个任务没有可合并的代码工作区。");
     return false;
   }
+  if (task.status !== "review") {
+    toast("任务还没有完成验证；等它进入 review 后再验收合并。");
+    return false;
+  }
+  const verification = task.evidence?.["verification"] as { verdict?: string } | undefined;
+  if (verification?.verdict !== "pass") {
+    toast("规格核对还没有通过，不能验收合并。");
+    return false;
+  }
   try {
     const result = await api.mergeWorkspace(workspaceId);
     await refreshSnapshot();

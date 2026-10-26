@@ -2685,13 +2685,28 @@ app.post("/api/v1/workspaces/:workspaceId/merge", async (c) => {
     .where(and(eq(tasks.id, workspace.taskId), eq(tasks.projectId, project.id)))
     .limit(1);
   if (!task) throw new HttpError(404, "TASK_NOT_FOUND", "Task not found.");
-  if (task.status !== "review") {
-    throw new HttpError(409, "TASK_NOT_READY", "Only a task in review can be merged.");
-  }
   const evidence = (task.evidence ?? {}) as Record<string, unknown>;
   const verification = evidence["verification"] as { verdict?: string } | undefined;
-  if (verification && verification.verdict !== "pass") {
-    throw new HttpError(409, "SPEC_NOT_PASSED", "Spec verification did not pass for this task.");
+  const previousMerge = evidence["merge"] as
+    | { commit?: string; branch?: string; baseBranch?: string }
+    | undefined;
+  // A double click (or a retry after a successful merge) should be harmless.
+  if (task.status === "done" && previousMerge?.commit) {
+    return c.json({
+      commit: previousMerge.commit,
+      branch: previousMerge.branch ?? workspace.branch,
+      baseBranch: previousMerge.baseBranch ?? project.defaultBranch,
+    });
+  }
+  if (task.status !== "review") {
+    throw new HttpError(
+      409,
+      "TASK_NOT_READY",
+      "只有 review 状态的任务才能验收合并；测试或验证中的任务请等完成。",
+    );
+  }
+  if (verification?.verdict !== "pass") {
+    throw new HttpError(409, "SPEC_NOT_PASSED", "规格核对还没有通过，不能验收合并。");
   }
 
   let merged: { commit: string; branch: string; baseBranch: string };

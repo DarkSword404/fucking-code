@@ -1,4 +1,4 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { ARTIFACT_LABELS, PHASE_LABELS } from "@devteam/contracts";
 import {
   acceptPendingTechnicalArtifacts,
@@ -34,6 +34,13 @@ export function DecisionInbox() {
   const count = () => pendingDecisionCount(snap());
   const canDecide = () => canEditCurrentProject();
   const hasRepo = () => Boolean(snap()?.project.repoPath);
+  const [mergingTaskId, setMergingTaskId] = createSignal<string | null>(null);
+  const verificationOf = (task: { evidence?: Record<string, unknown> }) =>
+    task.evidence?.["verification"] as { verdict?: string } | undefined;
+  const canMergeTask = (task: { status: string; evidence?: Record<string, unknown> }) =>
+    task.status === "review" &&
+    Boolean(task.evidence?.["workspaceId"]) &&
+    verificationOf(task)?.verdict === "pass";
   const technical = () =>
     artifacts().filter((item) =>
       ["design", "api_contract", "plan", "note", "repo_analysis", "diff", "test_report", "spec_review"].includes(item.kind),
@@ -144,17 +151,29 @@ export function DecisionInbox() {
                       >
                         查看变更
                       </button>
-                      <Show when={Boolean(task.evidence?.["workspaceId"])}>
+                      <Show when={canMergeTask(task)}>
                         <button
                           class="btn primary"
-                          onClick={() => {
-                            if (window.confirm(`验收并合并「${task.title}」？`)) {
-                              void mergeTaskWorkspace(task);
+                          disabled={mergingTaskId() === task.id}
+                          onClick={async () => {
+                            if (!window.confirm(`验收并合并「${task.title}」？`)) return;
+                            setMergingTaskId(task.id);
+                            try {
+                              await mergeTaskWorkspace(task);
+                            } finally {
+                              setMergingTaskId(null);
                             }
                           }}
                         >
-                          验收合并
+                          {mergingTaskId() === task.id ? "合并中…" : "验收合并"}
                         </button>
+                      </Show>
+                      <Show when={Boolean(task.evidence?.["workspaceId"]) && !canMergeTask(task)}>
+                        <span class="decision-hint">
+                          {task.status === "testing"
+                            ? "验证中，完成后才能验收合并"
+                            : "规格核对未通过，暂不能合并"}
+                        </span>
                       </Show>
                       <Show when={!task.evidence?.["workspaceId"]}>
                         <button
