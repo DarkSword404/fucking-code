@@ -28,7 +28,12 @@ import {
   nextPhase,
   uuidv7,
 } from "@devteam/domain";
-import { createWorkspace, runTaskWork, validateRepoPath } from "@devteam/workspace";
+import {
+  createWorkspace,
+  ensureProjectRepo,
+  runTaskWork,
+  validateRepoPath,
+} from "@devteam/workspace";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
 
 const schedulerLocks = new Set<string>();
@@ -188,6 +193,32 @@ export async function pauseAutoDevelopment(
     action: "auto_paused",
     reason,
   });
+}
+
+/** Create and attach a local repository for projects that came without one. */
+export async function ensureProjectRepository(projectId: string): Promise<ProjectRow> {
+  const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) throw new Error("project not found");
+  if (project.repoPath) return project;
+
+  const repoPath = await ensureProjectRepo({
+    root: process.env.PROJECT_REPO_ROOT ?? process.env.DEMO_REPO_ROOT ?? "./data/repos",
+    projectId: project.id,
+    name: project.name,
+  });
+  await validateRepoPath(repoPath);
+  const [updated] = await db
+    .update(projects)
+    .set({ repoPath, updatedAt: new Date(), version: project.version + 1 })
+    .where(eq(projects.id, project.id))
+    .returning();
+  if (!updated) throw new Error("project update failed");
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+    action: "repo_created",
+    projectId: project.id,
+  });
+  return updated;
 }
 
 export async function enableAutoDevelopment(projectId: string): Promise<void> {

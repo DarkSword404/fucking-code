@@ -784,12 +784,6 @@ export function openTaskCode(task: Task): void {
 export async function resumeAutoDevelopment(): Promise<void> {
   const id = currentId();
   if (!id) return;
-  if (!snapshot()?.project.repoPath) {
-    const message = "项目还没有配置仓库路径，无法自动开发。请点顶部 ⚙ 项目设置，填写服务器上的 Git 仓库路径。";
-    setAutoStartError(message);
-    toast(message);
-    return;
-  }
   setAutoStartError(null);
   try {
     const snap = await api.startAutoDevelopment(id);

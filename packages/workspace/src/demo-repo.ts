@@ -162,3 +162,50 @@ export async function ensureDemoRepo(root: string): Promise<string> {
   await git(repoPath, ["commit", "-m", "chore: initial notes library"]);
   return repoPath;
 }
+
+/**
+ * Create an empty, isolated Git repository for a project that did not bring
+ * its own repo. This is the default for non-technical clients: they should not
+ * have to understand worktrees, branches or Git paths before starting.
+ */
+export async function ensureProjectRepo(input: {
+  root: string;
+  projectId: string;
+  name: string;
+}): Promise<string> {
+  const repoPath = resolve(input.root, `project-${input.projectId}`);
+  const gitDir = join(repoPath, ".git");
+  const readme = `# ${input.name}
+
+This repository was initialized automatically by Fucking Code.
+
+The team will work on isolated branches and merge only after your approval.
+`;
+  const gitignore = `node_modules/
+coverage/
+.env
+.env.*
+dist/
+build/
+*.log
+`;
+
+  await mkdir(repoPath, { recursive: true });
+  await writeFile(join(repoPath, "README.md"), readme, "utf8").catch(() => undefined);
+  await writeFile(join(repoPath, ".gitignore"), gitignore, "utf8").catch(() => undefined);
+
+  const hasGit = await stat(gitDir).then(
+    (s) => s.isDirectory(),
+    () => false,
+  );
+  if (!hasGit) await git(repoPath, ["init", "-b", "main"]);
+  await git(repoPath, ["config", "user.email", "devteam@local"]);
+  await git(repoPath, ["config", "user.name", "Fucking Code"]);
+
+  const head = await git(repoPath, ["rev-parse", "--verify", "HEAD"]).catch(() => "");
+  if (!head.trim()) {
+    await git(repoPath, ["add", "-A"]);
+    await git(repoPath, ["commit", "-m", "chore: initialize project repository"]);
+  }
+  return repoPath;
+}

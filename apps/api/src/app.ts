@@ -86,6 +86,7 @@ import {
   autoStartNext,
   enableAutoDevelopment,
   hasPendingDecisions,
+  ensureProjectRepository,
   nudgePhaseProposal,
   pauseAutoDevelopment,
   resumeAutoDevelopment,
@@ -954,13 +955,18 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
 
 app.post("/api/v1/projects/:projectId/auto/start", async (c) => {
   const user = c.get("user");
-  const { project } = await requireProjectEditor(c);
+  const { project: initialProject } = await requireProjectEditor(c);
+  let project = initialProject;
   if (!project.repoPath) {
-    throw new HttpError(
-      400,
-      "REPO_NOT_CONFIGURED",
-      "项目还没有配置仓库路径。请先在项目设置里填写服务器上的 Git 仓库路径，再继续自动开发。",
-    );
+    try {
+      project = await ensureProjectRepository(project.id);
+    } catch (error) {
+      throw new HttpError(
+        400,
+        "REPO_AUTO_CONFIGURE_FAILED",
+        `自动创建项目仓库失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   if (await hasPendingDecisions(project.id)) {
     throw new HttpError(

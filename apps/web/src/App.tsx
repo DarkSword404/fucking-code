@@ -213,7 +213,7 @@ function Workspace() {
             <button
               class="btn primary"
               onClick={() => void resumeAutoDevelopment()}
-              title="继续自动开发；如果还没有配置仓库路径，会提示先配置"
+              title="继续自动开发；如果项目还没有仓库，会自动创建一个空仓库"
             >
               继续自动开发
             </button>

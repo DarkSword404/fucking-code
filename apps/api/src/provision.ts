@@ -10,6 +10,7 @@ import {
   type ProjectRow,
   type UserRow,
 } from "@devteam/db";
+import { ensureProjectRepo } from "@devteam/workspace";
 import { isDemoMode } from "./demo.js";
 
 const WELCOME = [
@@ -42,6 +43,21 @@ export async function createProjectForUser(input: {
   const projectId = uuidv7();
   const roomId = uuidv7();
 
+  let repoPath = isDemoMode() ? null : input.repoPath ?? null;
+  if (!repoPath && !isDemoMode()) {
+    try {
+      repoPath = await ensureProjectRepo({
+        root: process.env.PROJECT_REPO_ROOT ?? process.env.DEMO_REPO_ROOT ?? "./data/repos",
+        projectId,
+        name: input.name,
+      });
+    } catch (error) {
+      // Keep project creation usable even if git is temporarily unavailable;
+      // the auto-start path will retry and surface a clear error later.
+      console.error("[provision] failed to initialize project repo", error);
+    }
+  }
+
   const [project] = await db
     .insert(projects)
     .values({
@@ -53,7 +69,7 @@ export async function createProjectForUser(input: {
       phase: "intake",
       status: "active",
       repoUrl: isDemoMode() ? null : input.repoUrl ?? null,
-      repoPath: isDemoMode() ? null : input.repoPath ?? null,
+      repoPath: isDemoMode() ? null : repoPath,
     })
     .returning();
   if (!project) throw new Error("project insert failed");

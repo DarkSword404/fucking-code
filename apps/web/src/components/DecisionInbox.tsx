@@ -255,11 +255,11 @@ export function DecisionInbox() {
                 自动开发已暂停。确认没有遗漏后，再继续下一个任务；不会在你点按钮前自动开跑。
               </p>
               <Show when={!hasRepo()}>
-                <div class="decision-error">
-                  项目还没有配置仓库路径，暂时不能自动开发。请点顶部 ⚙ 项目设置，填写服务器上的 Git 仓库路径。
+                <div class="decision-note">
+                  这个项目还没有仓库路径；点「继续自动开发」会自动创建一个隔离的空 Git 仓库，不需要你手动配置。
                 </div>
               </Show>
-              <Show when={hasRepo() && snap()?.project.autoStartTasks === false}>
+              <Show when={snap()?.project.autoStartTasks === false}>
                 <button class="btn primary" onClick={() => void resumeAutoDevelopment()}>
                   继续自动开发
                 </button>
