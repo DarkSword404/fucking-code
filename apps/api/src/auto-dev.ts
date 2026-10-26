@@ -221,6 +221,43 @@ export async function ensureProjectRepository(projectId: string): Promise<Projec
   return updated;
 }
 
+/**
+ * A process restart can leave a code task marked in_progress while no worker
+ * exists. Requeue those tasks instead of letting auto-development silently skip
+ * them forever. A running workQueue (when this is called outside startup) is
+ * never disturbed.
+ */
+export async function recoverOrphanedTasks(): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .select({ task: tasks, workspace: workspaces })
+    .from(tasks)
+    .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
+    .where(eq(tasks.status, "in_progress"));
+  for (const row of rows) {
+    if (workQueue.isRunning(row.workspace.id)) continue;
+    await db
+      .update(tasks)
+      .set({
+        status: "ready",
+        blockedReason: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, row.task.id));
+    const [project] = await db
+      .select({ tenantId: projects.tenantId })
+      .from(projects)
+      .where(eq(projects.id, row.task.projectId))
+      .limit(1);
+    if (project) {
+      await projectEmitter(project.tenantId, row.task.projectId)(
+        EVENT_TYPES.taskChanged,
+        { taskId: row.task.id, action: "recovered", status: "ready" },
+      ).catch(() => undefined);
+    }
+  }
+}
+
 export async function enableAutoDevelopment(projectId: string): Promise<void> {
   if (await hasPendingDecisions(projectId)) {
     throw new Error("还有待决策项，处理完后再继续自动开发。");
@@ -330,10 +367,6 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
   const orchestrator = new Orchestrator({
     runtime,
     emit,
-    // QA / Lead each need a round; an explicitly mentioned Backend (or other
-    // colleague) needs the next one. A 2-round budget silently drops that
-    // third reply and makes the user @ the agent again.
-    maxRounds: 4,
     maxSpeakersPerRound: 1,
   });
   await new Promise<void>((resolve) => {

@@ -128,17 +128,27 @@ export class Orchestrator {
   constructor(options: OrchestratorOptions) {
     this.runtime = options.runtime;
     this.emit = options.emit;
-    this.maxRounds = options.maxRounds ?? Number(process.env.MAX_ROUNDS ?? 4);
+    const positiveLimit = (value: number | undefined, fallback: number): number => {
+      const parsed = Number(value ?? fallback);
+      // 0 means "no fixed limit": the room stops when nobody wants to speak,
+      // when a round repeats itself, or when the client presses Stop.
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : Infinity;
+    };
+    this.maxRounds = positiveLimit(options.maxRounds, Number(process.env.MAX_ROUNDS ?? 0));
     // One reply at a time. Other willing speakers are queued for later rounds,
     // so the room reads like a conversation instead of a panel broadcast.
     this.maxSpeakersPerRound = Math.min(
       1,
       options.maxSpeakersPerRound ?? Number(process.env.MAX_SPEAKERS_PER_ROUND ?? 1),
     );
-    this.maxMessagesPerTurn =
-      options.maxMessagesPerTurn ?? Number(process.env.MAX_MESSAGES_PER_TURN ?? 8);
-    this.maxMessagesPerAgent =
-      options.maxMessagesPerAgent ?? Number(process.env.MAX_MESSAGES_PER_AGENT ?? 2);
+    this.maxMessagesPerTurn = positiveLimit(
+      options.maxMessagesPerTurn,
+      Number(process.env.MAX_MESSAGES_PER_TURN ?? 0),
+    );
+    this.maxMessagesPerAgent = positiveLimit(
+      options.maxMessagesPerAgent,
+      Number(process.env.MAX_MESSAGES_PER_AGENT ?? 0),
+    );
     this.attentionConcurrency =
       options.attentionConcurrency ?? Number(process.env.ATTENTION_CONCURRENCY ?? 4);
   }
@@ -445,6 +455,7 @@ export class Orchestrator {
     let totalMessages = 0;
     let round = 0;
     let waitingForUser = false;
+    const seenRoundSignatures = new Set<string>();
 
     await this.emit(EVENT_TYPES.orchestrationStarted, {
       turnId,
@@ -822,6 +833,19 @@ export class Orchestrator {
         }
 
         if (!posted.length) break;
+
+        // There is no fixed round/message cap for ordinary conversation. Stop
+        // a pathological A→B→A repetition instead of cutting a real exchange
+        // off at an arbitrary number.
+        const roundSignature = posted
+          .map((p) => `${p.senderName}:${p.text.replace(/\s+/g, " ").trim()}`)
+          .join("|");
+        if (seenRoundSignatures.has(roundSignature)) {
+          round += 1;
+          break;
+        }
+        seenRoundSignatures.add(roundSignature);
+
         // A question to the client pauses the team. The next turn starts when
         // the client answers, instead of the agents talking over each other.
         if (waitingForUser) {
