@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { Message, TurnSummary } from "@devteam/contracts";
 import {
   canEditCurrentProject,
@@ -59,12 +59,24 @@ function TurnSummaryLine(props: { turn: TurnSummary }) {
   );
 }
 
+let savedChatScroll: { projectId: string; top: number; stick: boolean } | null = null;
+const savedDrafts = new Map<string, string>();
+
 export function ChatView() {
   let scrollEl: HTMLDivElement | undefined;
+  let activeProjectId = "";
+  let stickToBottom = true;
   let textarea: HTMLTextAreaElement | undefined;
-  const [value, setValue] = createSignal("");
+  const projectId = () => snapshot()?.project.id ?? "";
+  const [value, setValue] = createSignal(savedDrafts.get(projectId()) ?? "");
   const [mentionOpen, setMentionOpen] = createSignal(false);
   const [pickerOpen, setPickerOpen] = createSignal(false);
+
+  createEffect(on(projectId, (id, previous) => {
+    if (!previous || previous === id) return;
+    savedDrafts.set(previous, value());
+    setValue(savedDrafts.get(id) ?? "");
+  }));
 
   const roles = () => snapshot()?.roles ?? [];
   const roleOf = (message: Message) =>
@@ -168,10 +180,62 @@ export function ChatView() {
     return [];
   };
 
+  function saveScroll(): void {
+    if (!scrollEl || !activeProjectId) return;
+    savedChatScroll = {
+      projectId: activeProjectId,
+      top: scrollEl.scrollTop,
+      stick: stickToBottom,
+    };
+  }
+
+  function onScroll(): void {
+    if (!scrollEl) return;
+    stickToBottom =
+      scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop < 40;
+    saveScroll();
+  }
+
+  onMount(() => {
+    activeProjectId = snapshot()?.project.id ?? "";
+    const saved =
+      savedChatScroll && savedChatScroll.projectId === activeProjectId
+        ? savedChatScroll
+        : null;
+    stickToBottom = saved?.stick ?? true;
+    const top = saved?.top ?? 0;
+    queueMicrotask(() => {
+      if (!scrollEl) return;
+      scrollEl.scrollTop = stickToBottom ? scrollEl.scrollHeight : top;
+    });
+    scrollEl?.addEventListener("scroll", onScroll, { passive: true });
+  });
+
+  onCleanup(() => {
+    saveScroll();
+    scrollEl?.removeEventListener("scroll", onScroll);
+  });
+
   createEffect(() => {
+    const projectId = snapshot()?.project.id ?? "";
+    if (projectId !== activeProjectId) {
+      const initialized = Boolean(activeProjectId);
+      activeProjectId = projectId;
+      if (initialized) {
+        stickToBottom = true;
+        savedChatScroll = null;
+        queueMicrotask(() => {
+          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        });
+      }
+    }
     messages().length;
     thinking().length;
-    queueMicrotask(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" }));
+    if (stickToBottom) {
+      queueMicrotask(() =>
+        scrollEl?.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" }),
+      );
+    }
   });
 
   function resize() {
@@ -181,7 +245,9 @@ export function ChatView() {
   }
 
   function insertMention(key: string) {
-    setValue(value().replace(/@([A-Za-z\u4e00-\u9fa5]*)$/, `@${key} `));
+    const next = value().replace(/@([A-Za-z\u4e00-\u9fa5]*)$/, `@${key} `);
+    setValue(next);
+    savedDrafts.set(projectId(), next);
     setMentionOpen(false);
     textarea?.focus();
   }
@@ -191,6 +257,7 @@ export function ChatView() {
     if (!content || sending()) return;
     const mentions = [...content.matchAll(/@([A-Za-z\u4e00-\u9fa5]+)/g)].map((m) => m[1]!);
     setValue("");
+    savedDrafts.delete(projectId());
     if (textarea) textarea.style.height = "42px";
     setMentionOpen(false);
     setPickerOpen(false);
@@ -372,6 +439,7 @@ export function ChatView() {
             onInput={(event) => {
               const next = event.currentTarget.value;
               setValue(next);
+              savedDrafts.set(projectId(), next);
               const mentioning = /@([A-Za-z\u4e00-\u9fa5]*)$/.test(next);
               setMentionOpen(mentioning);
               if (mentioning) setPickerOpen(false);

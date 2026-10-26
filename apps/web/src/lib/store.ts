@@ -66,6 +66,8 @@ export interface PresenceUser {
 export const [presence, setPresence] = createSignal<PresenceUser[]>([]);
 
 let lastEventSeq = 0;
+let projectLoadToken = 0;
+let codeLoadToken = 0;
 let source: EventSource | null = null;
 let snapshotTimer: number | undefined;
 let messageTimer: number | undefined;
@@ -357,6 +359,7 @@ export async function reloadProjects(): Promise<void> {
 }
 
 export async function loadProject(id: string): Promise<void> {
+  const token = ++projectLoadToken;
   closeStream();
   setLoading(true);
   setCurrentId(id);
@@ -370,16 +373,20 @@ export async function loadProject(id: string): Promise<void> {
   localStorage.setItem("devteam.project", id);
   try {
     const [snap, page] = await Promise.all([api.snapshot(id), api.messages(id)]);
-    if (currentId() === id) applySnapshot(snap);
-    else setSnapshot(snap);
+    // A newer project click may have completed while this request was in
+    // flight. Never let an older response overwrite the active project.
+    if (token !== projectLoadToken) return;
+    applySnapshot(snap);
     setMessages(page.items);
     setRuns(snap.runs);
     lastEventSeq = snap.eventCursor ?? 0;
     connect(id);
+    if (view() === "code") void loadCodeView();
   } catch (err) {
+    if (token !== projectLoadToken) return;
     if (!(err instanceof ApiError && err.status === 401)) toast(messageOf(err));
   } finally {
-    setLoading(false);
+    if (token === projectLoadToken) setLoading(false);
   }
 }
 
@@ -430,6 +437,7 @@ export function closeArtifact(): void {
 }
 
 function resetCodeState(): void {
+  codeLoadToken += 1;
   setWorkspaces([]);
   setActiveWorkspaceId(null);
   setCodeFiles([]);
@@ -444,6 +452,8 @@ function resetCodeState(): void {
 export async function loadCodeView(): Promise<void> {
   const id = currentId();
   if (!id) return;
+  const token = ++codeLoadToken;
+  const isCurrent = () => token === codeLoadToken && currentId() === id;
   setCodeLoading(true);
   setCodeError("");
   try {
@@ -452,12 +462,15 @@ export async function loadCodeView(): Promise<void> {
       list = (await api.projectWorkspaces(id)).items;
     } catch (err) {
       if (err instanceof ApiError && (err.code === "DEMO_MODE" || err.status === 403)) {
-        setWorkspaces([]);
-        setCodeError("演示模式已禁用代码工作区。");
+        if (isCurrent()) {
+          setWorkspaces([]);
+          setCodeError("演示模式已禁用代码工作区。");
+        }
         return;
       }
       throw err;
     }
+    if (!isCurrent()) return;
     setWorkspaces(list);
     const saved = activeWorkspaceId();
     const active = (saved && list.some((item) => item.id === saved) ? saved : list[0]?.id) ?? null;
@@ -467,14 +480,25 @@ export async function loadCodeView(): Promise<void> {
 
     if (source === "workspace" && active) {
       const files = await api.workspaceFiles(active);
+      if (!isCurrent()) return;
       setCodeFiles(files.items);
-      if (codeTab() === "diff") setCodeDiff((await api.workspaceDiff(active)).diff);
-      if (codeTab() === "tests") setCodeTestRuns((await api.workspaceTestRuns(active)).items);
+      if (codeTab() === "diff") {
+        const diff = await api.workspaceDiff(active);
+        if (!isCurrent()) return;
+        setCodeDiff(diff.diff);
+      }
+      if (codeTab() === "tests") {
+        const runs = await api.workspaceTestRuns(active);
+        if (!isCurrent()) return;
+        setCodeTestRuns(runs.items);
+      }
     } else {
       try {
         const files = await api.repoFiles(id);
+        if (!isCurrent()) return;
         setCodeFiles(files.items);
       } catch (err) {
+        if (!isCurrent()) return;
         setCodeFiles([]);
         if (err instanceof ApiError && err.code === "REPO_NOT_CONFIGURED") {
           setCodeError("这个项目还没有配置仓库路径。");
@@ -490,6 +514,8 @@ export async function loadCodeView(): Promise<void> {
       setCodeTestRuns([]);
     }
 
+    if (!isCurrent()) return;
+
     const current = selectedFilePath();
     if (current && codeFiles().some((file) => file.path === current)) {
       await loadCodeFile(current);
@@ -500,26 +526,41 @@ export async function loadCodeView(): Promise<void> {
       if (first) await loadCodeFile(first);
     }
   } catch (err) {
-    if (!(err instanceof ApiError && err.status === 401)) toast(messageOf(err));
+    if (isCurrent() && !(err instanceof ApiError && err.status === 401)) toast(messageOf(err));
   } finally {
-    setCodeLoading(false);
+    if (isCurrent()) setCodeLoading(false);
   }
 }
 
 export async function loadCodeFile(path: string): Promise<void> {
   const id = currentId();
   if (!id) return;
+  const token = codeLoadToken;
+  const source = codeSource();
+  const workspaceId = activeWorkspaceId();
   try {
-    if (codeSource() === "workspace" && activeWorkspaceId()) {
-      const result = await api.workspaceFile(activeWorkspaceId()!, path);
+    if (source === "workspace" && workspaceId) {
+      const result = await api.workspaceFile(workspaceId, path);
+      if (
+        token !== codeLoadToken ||
+        currentId() !== id ||
+        codeSource() !== source ||
+        activeWorkspaceId() !== workspaceId
+      ) {
+        return;
+      }
       setSelectedFilePath(path);
       setSelectedFileContent(result.content);
     } else {
       const result = await api.repoFile(id, path);
+      if (token !== codeLoadToken || currentId() !== id || codeSource() !== source) {
+        return;
+      }
       setSelectedFilePath(path);
       setSelectedFileContent(result.content);
     }
   } catch (err) {
+    if (token !== codeLoadToken) return;
     if (!(err instanceof ApiError && err.status === 401)) toast(messageOf(err));
   }
 }
@@ -670,18 +711,33 @@ export function selectWorkspace(workspaceId: string): void {
 export function selectCodeTab(tab: "files" | "diff" | "tests" | "terminal"): void {
   setCodeTab(tab);
   const workspaceId = activeWorkspaceId();
-  if (!workspaceId) return;
+  const projectId = currentId();
+  if (!workspaceId || !projectId) return;
+  const token = codeLoadToken;
+  const isCurrent = () =>
+    token === codeLoadToken &&
+    currentId() === projectId &&
+    activeWorkspaceId() === workspaceId &&
+    codeTab() === tab;
   if (tab === "diff") {
     void api
       .workspaceDiff(workspaceId)
-      .then((result) => setCodeDiff(result.diff))
-      .catch((err) => toast(messageOf(err)));
+      .then((result) => {
+        if (isCurrent()) setCodeDiff(result.diff);
+      })
+      .catch((err) => {
+        if (isCurrent()) toast(messageOf(err));
+      });
   }
   if (tab === "tests") {
     void api
       .workspaceTestRuns(workspaceId)
-      .then((result) => setCodeTestRuns(result.items))
-      .catch((err) => toast(messageOf(err)));
+      .then((result) => {
+        if (isCurrent()) setCodeTestRuns(result.items);
+      })
+      .catch((err) => {
+        if (isCurrent()) toast(messageOf(err));
+      });
   }
 }
 

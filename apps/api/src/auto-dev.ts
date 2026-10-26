@@ -198,6 +198,7 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
           participantKeys: ["qa", "lead"],
           userName: "系统",
           triggerLabel: "系统（任务回执）",
+          readOnly: true,
           userId: project.tenantId,
           signal,
         });

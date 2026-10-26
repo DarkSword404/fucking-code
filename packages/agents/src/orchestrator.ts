@@ -27,6 +27,7 @@ export interface OrchestratorParams {
   userId: string;
   userName: string;
   triggerLabel?: string;
+  readOnly?: boolean;
   signal?: AbortSignal;
 }
 
@@ -694,7 +695,7 @@ export class Orchestrator {
           }
 
           const result = item.result;
-          const actions = result.actions as ValidatedAgentAction[];
+          const actions = params.readOnly ? [] : (result.actions as ValidatedAgentAction[]);
           const parseErrors = (result.metadata.parseErrors as string[] | undefined) ?? [];
           if (parseErrors.length) {
             const raw = (result.metadata.rawBlocks as string[] | undefined) ?? [];
