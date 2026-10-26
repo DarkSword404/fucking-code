@@ -170,6 +170,18 @@ async function ensureNotLastOwner(projectId: string, userId: string): Promise<vo
   }
 }
 
+async function assertWorkspaceIdle(projectId: string): Promise<void> {
+  const db = getDb();
+  const rows = await db.select().from(workspaces).where(eq(workspaces.projectId, projectId));
+  if (rows.some((workspace) => workQueue.isRunning(workspace.id))) {
+    throw new HttpError(
+      409,
+      "PROJECT_BUSY",
+      "项目还有代码任务或验证在运行，请等当前步骤完成后再操作。",
+    );
+  }
+}
+
 async function assertProjectIdle(projectId: string): Promise<void> {
   const room = await roomFor({ id: projectId } as ProjectRow);
   if (roomQueue.isRunning(room.id)) {
@@ -179,15 +191,7 @@ async function assertProjectIdle(projectId: string): Promise<void> {
       "A conversation turn is still running. Stop it before deleting the project.",
     );
   }
-  const db = getDb();
-  const rows = await db.select().from(workspaces).where(eq(workspaces.projectId, projectId));
-  if (rows.some((workspace) => workQueue.isRunning(workspace.id))) {
-    throw new HttpError(
-      409,
-      "PROJECT_BUSY",
-      "A code task or verification is still running. Wait for it to finish before deleting the project.",
-    );
-  }
+  await assertWorkspaceIdle(projectId);
 }
 
 async function audit(input: {
@@ -937,6 +941,9 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
         `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中填写 ALLOWED_REPO_ROOTS 下的有效 Git 仓库。`,
       );
     }
+  }
+  if (body.repoPath !== undefined || body.defaultBranch !== undefined) {
+    await assertWorkspaceIdle(project.id);
   }
   const db = getDb();
   const { expectedVersion: _expectedVersion, ...patch } = body;
@@ -2299,6 +2306,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
       "Resolve pending decisions before changing phase; the AI proposal is the normal path.",
     );
   }
+  await assertWorkspaceIdle(project.id);
   const from = project.phase as WorkflowPhase;
   const to = (body.to ?? nextPhase(from)) as WorkflowPhase | null;
   if (!to) throw new HttpError(409, "WORKFLOW_COMPLETE", "Workflow is already complete.");
