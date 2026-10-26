@@ -2833,7 +2833,22 @@ app.post("/api/v1/workspaces/:workspaceId/pull-request", async (c) => {
     .limit(1);
   if (!task) throw new HttpError(404, "TASK_NOT_FOUND", "Task not found.");
   if (task.status !== "review") {
-    throw new HttpError(409, "TASK_NOT_READY", "Only a task in review can open a pull request.");
+    throw new HttpError(
+      409,
+      "TASK_NOT_READY",
+      "只有 review 状态的任务才能推送 PR；测试或验证中的任务请等完成。",
+    );
+  }
+  const pullRequestEvidence = (task.evidence ?? {}) as Record<string, unknown>;
+  const pullRequestVerification = pullRequestEvidence["verification"] as
+    | { verdict?: string }
+    | undefined;
+  if (pullRequestVerification?.verdict !== "pass") {
+    throw new HttpError(
+      409,
+      "SPEC_NOT_PASSED",
+      "规格核对还没有通过，不能推送 PR。",
+    );
   }
 
   let pushed: { commit: string; remote: string; branch: string };
@@ -2957,6 +2972,13 @@ app.post("/api/v1/workspaces/:workspaceId/commands", async (c) => {
   const { workspace, project, role } = await requireWorkspace(c);
   if (role === "viewer") {
     throw new HttpError(403, "READ_ONLY", "Viewers cannot run workspace commands.");
+  }
+  if (workQueue.isRunning(workspace.id)) {
+    throw new HttpError(
+      409,
+      "WORK_ALREADY_RUNNING",
+      "工作区还在运行或验证中，请等当前步骤完成后再执行命令。",
+    );
   }
   const body = commandSchema.parse(await c.req.json());
   const result = await runCommand(workspace.path, body.command, 180_000);

@@ -4,6 +4,7 @@ import {
   createTask,
   deleteTask,
   demoMode,
+  isTaskRunning,
   loadTaskDependencies,
   mergeTaskWorkspace,
   openTaskCode,
@@ -84,7 +85,7 @@ export function TasksView() {
     return role === "owner" || role === "member";
   };
   const canEditTask = (task: Task) =>
-    canEdit() && !["done", "cancelled"].includes(task.status);
+    canEdit() && !["done", "cancelled"].includes(task.status) && !isTaskRunning(task.id);
   const roleOf = (task: Task) => snapshot()?.roles.find((r) => r.key === task.roleKey);
   const hasRepo = () => Boolean(snapshot()?.project.repoPath);
   const hasSpec = (task: Task) =>
@@ -97,11 +98,14 @@ export function TasksView() {
       canEditTask(task) &&
       task.status === "review" &&
       typeof task.evidence?.["workspaceId"] === "string" &&
-      (verification?.verdict ?? "pass") === "pass"
+      verification?.verdict === "pass" &&
+      !isTaskRunning(task.id)
     );
   };
   const runnable = (task: Task) =>
-    hasRepo() && ["ready", "in_progress", "blocked", "failed", "needs_replan"].includes(task.status);
+    hasRepo() &&
+    !isTaskRunning(task.id) &&
+    ["ready", "in_progress", "blocked", "failed", "needs_replan"].includes(task.status);
 
   const inGroup = (statuses: readonly string[]) => tasks().filter((t) => statuses.includes(t.status));
 
@@ -225,14 +229,18 @@ export function TasksView() {
                                 <button
                                   class="btn primary"
                                   style={{ padding: "3px 9px", "font-size": "11px" }}
-                                  disabled={workingTaskId() === task.id}
+                                  disabled={workingTaskId() === task.id || isTaskRunning(task.id)}
                                   onClick={() => void startTaskWork(task.id)}
                                 >
                                   {workingTaskId() === task.id
                                     ? "启动中…"
-                                    : task.status === "failed" || task.status === "blocked"
-                                      ? "重试"
-                                      : "开始工作"}
+                                    : isTaskRunning(task.id)
+                                      ? "运行中…"
+                                      : task.status === "failed" || task.status === "blocked"
+                                        ? "重试"
+                                        : task.status === "in_progress"
+                                          ? "重新开始"
+                                          : "开始工作"}
                                 </button>
                               </Show>
                               <Show when={diffId(task) || task.evidence?.["workspaceId"]}>
@@ -550,8 +558,9 @@ export function TasksView() {
                 </button>
                 <button
                   class="btn danger"
-                  disabled={deleting()}
+                  disabled={deleting() || isTaskRunning(task().id)}
                   onClick={async () => {
+                    if (isTaskRunning(task().id)) return;
                     setDeleting(true);
                     const ok = await deleteTask(task().id);
                     setDeleting(false);

@@ -14,13 +14,13 @@ import {
   codeSource,
   codeTab,
   codeTestRuns,
+  isWorkspaceRunning,
   loadCodeView,
   saveCodeFile,
   selectCodeFile,
   selectCodeSource,
   selectCodeTab,
   selectWorkspace,
-  runs,
   selectedFileContent,
   selectedFilePath,
   snapshot,
@@ -166,12 +166,7 @@ export function CodeView() {
   });
 
   const parsedDiff = createMemo(() => parseDiff(codeDiff()));
-  const activeRun = () =>
-    runs().find(
-      (run) =>
-        run.status === "running" &&
-        run.metadata?.["workspaceId"] === activeWorkspaceId(),
-    );
+  const activeRun = () => isWorkspaceRunning(activeWorkspaceId());
 
   const startEdit = () => {
     setEditContent(selectedFileContent() ?? "");
@@ -191,6 +186,11 @@ export function CodeView() {
     const workspaceId = activeWorkspaceId();
     const text = command().trim();
     if (!workspaceId || !text || commandRunning()) return;
+    if (activeRun()) {
+      setCommandStatus("error");
+      setCommandOutput("工作区还在运行或验证中，请等当前步骤完成后再执行命令。");
+      return;
+    }
     setCommandRunning(true);
     setCommandStatus("");
     setCommandOutput(`$ ${text}\n\n运行中…`);
@@ -322,7 +322,8 @@ export function CodeView() {
               activeWorkspaceId() &&
               selectedFilePath() &&
               codeTab() === "files" &&
-              !editing()
+              !editing() &&
+              !activeRun()
             }
           >
             <button class="btn" style={{ padding: "3px 9px", "font-size": "11px" }} onClick={startEdit}>
@@ -342,9 +343,10 @@ export function CodeView() {
             <button
               class="btn"
               style={{ padding: "3px 9px", "font-size": "11px" }}
+              disabled={activeRun()}
               onClick={() => void verifyCodeWorkspace()}
             >
-              重新核对
+              {activeRun() ? "核对中…" : "重新核对"}
             </button>
           </Show>
           <Show when={codeLoading()}>
@@ -589,10 +591,10 @@ export function CodeView() {
                     />
                     <button
                       class="btn primary"
-                      disabled={!command().trim() || commandRunning()}
+                      disabled={!command().trim() || commandRunning() || activeRun()}
                       onClick={() => void runCommand()}
                     >
-                      {commandRunning() ? "运行中…" : "运行"}
+                      {commandRunning() ? "运行中…" : activeRun() ? "工作区运行中…" : "运行"}
                     </button>
                   </div>
                   <pre class={`terminal-output ${commandStatus()}`}>

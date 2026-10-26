@@ -80,6 +80,29 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function isTaskRunning(
+  taskId: string,
+  snap: ProjectSnapshot | null = snapshot(),
+): boolean {
+  return Boolean(
+    snap?.runs.some(
+      (run) => run.status === "running" && run.metadata?.["taskId"] === taskId,
+    ),
+  );
+}
+
+export function isWorkspaceRunning(
+  workspaceId: string | null,
+  snap: ProjectSnapshot | null = snapshot(),
+): boolean {
+  if (!workspaceId) return false;
+  return Boolean(
+    snap?.runs.some(
+      (run) => run.status === "running" && run.metadata?.["workspaceId"] === workspaceId,
+    ),
+  );
+}
+
 export function pendingDecisionCount(snap: ProjectSnapshot | null = snapshot()): number {
   if (!snap) return 0;
   return (
@@ -92,6 +115,7 @@ export function pendingDecisionCount(snap: ProjectSnapshot | null = snapshot()):
 
 function applySnapshot(snap: ProjectSnapshot): void {
   setSnapshot(snap);
+  setRuns(snap.runs);
   const count = pendingDecisionCount(snap);
   if (count > 0 && lastPendingDecisionCount === 0) setDecisionOpen(true);
   lastPendingDecisionCount = count;
@@ -576,6 +600,10 @@ export function selectCodeFile(path: string): void {
 export async function verifyCodeWorkspace(): Promise<boolean> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return false;
+  if (isWorkspaceRunning(workspaceId)) {
+    toast("工作区还在运行或验证中，请等当前步骤完成。");
+    return false;
+  }
   try {
     await api.verifyWorkspace(workspaceId);
     toast("已排入核对队列；完成后会更新测试、规格核对和任务状态。");
@@ -593,6 +621,19 @@ export async function openTaskPullRequest(task: Task): Promise<boolean> {
       : null;
   if (!workspaceId) {
     toast("这个任务没有可推送的代码工作区。");
+    return false;
+  }
+  if (isTaskRunning(task.id)) {
+    toast("任务还在运行或验证中，请等当前步骤完成后再推送。");
+    return false;
+  }
+  if (task.status !== "review") {
+    toast("只有 review 状态的任务才能推送 PR。");
+    return false;
+  }
+  const verification = task.evidence?.["verification"] as { verdict?: string } | undefined;
+  if (verification?.verdict !== "pass") {
+    toast("规格核对还没有通过，不能推送 PR。");
     return false;
   }
   try {
@@ -619,7 +660,7 @@ export async function mergeTaskWorkspace(task: Task): Promise<boolean> {
     toast("这个任务没有可合并的代码工作区。");
     return false;
   }
-  if (snapshot()?.runs.some((run) => run.status === "running" && run.metadata?.["taskId"] === task.id)) {
+  if (isTaskRunning(task.id)) {
     toast("任务还在验证中，等验证完成后才能验收合并。");
     return false;
   }
@@ -661,6 +702,10 @@ export async function cancelCodeWorkspace(): Promise<boolean> {
 export async function saveCodeFile(path: string, content: string): Promise<boolean> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return false;
+  if (isWorkspaceRunning(workspaceId)) {
+    toast("工作区还在运行或验证中，等当前步骤完成后再编辑。");
+    return false;
+  }
   try {
     const result = await api.writeWorkspaceFile(workspaceId, path, content);
     await loadCodeFile(path);
@@ -1008,8 +1053,13 @@ export async function toggleRoleInRoom(roleKey: string, inRoom: boolean): Promis
   }
 }
 
-export async function startTaskWork(taskId: string): Promise<void> {  const id = currentId();
+export async function startTaskWork(taskId: string): Promise<void> {
+  const id = currentId();
   if (!id) return;
+  if (isTaskRunning(taskId)) {
+    toast("任务已经在运行或验证中。");
+    return;
+  }
   setWorkingTaskId(taskId);
   try {
     await api.startTaskWork(id, taskId);
