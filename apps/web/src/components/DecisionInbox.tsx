@@ -35,12 +35,23 @@ export function DecisionInbox() {
   const canDecide = () => canEditCurrentProject();
   const hasRepo = () => Boolean(snap()?.project.repoPath);
   const [mergingTaskId, setMergingTaskId] = createSignal<string | null>(null);
+  const isTaskRunning = (taskId: string) =>
+    Boolean(
+      snap()?.runs.some(
+        (run) => run.status === "running" && run.metadata?.["taskId"] === taskId,
+      ),
+    );
   const verificationOf = (task: { evidence?: Record<string, unknown> }) =>
     task.evidence?.["verification"] as { verdict?: string } | undefined;
-  const canMergeTask = (task: { status: string; evidence?: Record<string, unknown> }) =>
+  const canMergeTask = (task: {
+    id: string;
+    status: string;
+    evidence?: Record<string, unknown>;
+  }) =>
     task.status === "review" &&
     Boolean(task.evidence?.["workspaceId"]) &&
-    verificationOf(task)?.verdict === "pass";
+    verificationOf(task)?.verdict === "pass" &&
+    !isTaskRunning(task.id);
   const technical = () =>
     artifacts().filter((item) =>
       ["design", "api_contract", "plan", "note", "repo_analysis", "diff", "test_report", "spec_review"].includes(item.kind),
@@ -170,9 +181,11 @@ export function DecisionInbox() {
                       </Show>
                       <Show when={Boolean(task.evidence?.["workspaceId"]) && !canMergeTask(task)}>
                         <span class="decision-hint">
-                          {task.status === "testing"
+                          {isTaskRunning(task.id)
                             ? "验证中，完成后才能验收合并"
-                            : "规格核对未通过，暂不能合并"}
+                            : task.status === "testing"
+                              ? "验证中，完成后才能验收合并"
+                              : "规格核对未通过，暂不能合并"}
                         </span>
                       </Show>
                       <Show when={!task.evidence?.["workspaceId"]}>

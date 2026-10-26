@@ -9,6 +9,7 @@ import {
 import {
   getDb,
   insertMessage,
+  agentRuns,
   approvals,
   artifacts,
   decisions,
@@ -229,6 +230,12 @@ export async function ensureProjectRepository(projectId: string): Promise<Projec
  */
 export async function recoverOrphanedTasks(): Promise<void> {
   const db = getDb();
+  // No live worker survives a process restart. Mark stale agent runs cancelled
+  // before requeueing tasks, otherwise the UI keeps showing "running" forever.
+  await db
+    .update(agentRuns)
+    .set({ status: "cancelled", endedAt: new Date(), error: "服务重启，运行已中断" })
+    .where(eq(agentRuns.status, "running"));
   const rows = await db
     .select({ task: tasks, workspace: workspaces })
     .from(tasks)

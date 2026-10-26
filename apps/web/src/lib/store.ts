@@ -619,6 +619,10 @@ export async function mergeTaskWorkspace(task: Task): Promise<boolean> {
     toast("这个任务没有可合并的代码工作区。");
     return false;
   }
+  if (snapshot()?.runs.some((run) => run.status === "running" && run.metadata?.["taskId"] === task.id)) {
+    toast("任务还在验证中，等验证完成后才能验收合并。");
+    return false;
+  }
   if (task.status !== "review") {
     toast("任务还没有完成验证；等它进入 review 后再验收合并。");
     return false;

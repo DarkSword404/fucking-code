@@ -2568,7 +2568,7 @@ app.put("/api/v1/workspaces/:workspaceId/file", async (c) => {
   const body = writeFileSchema.parse(await c.req.json());
   const db = getDb();
   if (workQueue.isRunning(workspace.id)) {
-    throw new HttpError(409, "WORK_ALREADY_RUNNING", "A code run or verification is already running.");
+    throw new HttpError(409, "WORK_ALREADY_RUNNING", "任务还有代码运行或验证在进行，请等当前步骤完成。");
   }
 
   let task: typeof tasks.$inferSelect | undefined;
@@ -2648,7 +2648,7 @@ app.post("/api/v1/workspaces/:workspaceId/verify", async (c) => {
     throw new HttpError(409, "TASK_CLOSED", `Task is ${task.status}.`);
   }
   if (workQueue.isRunning(workspace.id)) {
-    throw new HttpError(409, "WORK_ALREADY_RUNNING", "A code run or verification is already running.");
+    throw new HttpError(409, "WORK_ALREADY_RUNNING", "任务还有代码运行或验证在进行，请等当前步骤完成。");
   }
   const emit = projectEmitter(project.tenantId, project.id);
   workQueue.enqueue(workspace.id, (signal) =>
@@ -2676,7 +2676,7 @@ app.post("/api/v1/workspaces/:workspaceId/merge", async (c) => {
     throw new HttpError(400, "NO_TASK", "This workspace is not linked to a task.");
   }
   if (workQueue.isRunning(workspace.id)) {
-    throw new HttpError(409, "WORK_ALREADY_RUNNING", "Wait for the current code run or verification to finish.");
+    throw new HttpError(409, "WORK_ALREADY_RUNNING", "任务还在运行或验证中，请等当前步骤完成后再验收合并。");
   }
   const db = getDb();
   const [task] = await db
@@ -2823,7 +2823,7 @@ app.post("/api/v1/workspaces/:workspaceId/pull-request", async (c) => {
     throw new HttpError(400, "NO_TASK", "This workspace is not linked to a task.");
   }
   if (workQueue.isRunning(workspace.id)) {
-    throw new HttpError(409, "WORK_ALREADY_RUNNING", "Wait for the current code run or verification to finish.");
+    throw new HttpError(409, "WORK_ALREADY_RUNNING", "任务还在运行或验证中，请等当前步骤完成后再验收合并。");
   }
   const db = getDb();
   const [task] = await db
