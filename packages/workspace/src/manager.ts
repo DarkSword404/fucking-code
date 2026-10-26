@@ -399,7 +399,11 @@ export async function readRepoContext(repoPath: string): Promise<string> {
 }
 
 /** Stage everything in the isolated worktree, then return a reviewable diff. */
-export async function workspaceDiff(root: string): Promise<string> {
+export async function workspaceDiff(
+  root: string,
+  baseCommit?: string | null,
+): Promise<string> {
+  const base = baseCommit || "HEAD";
   await gitSafe(root, ["add", "-A"]);
   return gitSafe(root, [
     "-c",
@@ -407,8 +411,39 @@ export async function workspaceDiff(root: string): Promise<string> {
     "diff",
     "--cached",
     "--no-color",
-    "HEAD",
+    base,
   ]);
+}
+
+/**
+ * Name-status list relative to the worktree's base commit. This must not use
+ * `git status`: coding agents may commit their work, after which status is
+ * clean even though the branch contains reviewable changes.
+ */
+export async function workspaceChangedFiles(
+  root: string,
+  baseCommit?: string | null,
+): Promise<FileEntry[]> {
+  const base = baseCommit || "HEAD";
+  const output = await gitSafe(root, [
+    "-c",
+    "core.quotepath=false",
+    "diff",
+    "--name-status",
+    base,
+  ]);
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      const status = (parts[0] ?? "M").charAt(0);
+      const path = parts[parts.length - 1] ?? "";
+      return { path, status };
+    })
+    .filter((entry) => Boolean(entry.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export async function detectTestCommand(root: string): Promise<string | null> {

@@ -6,8 +6,10 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   createWorkspace,
   ensureDemoRepo,
+  git,
   readWorkspaceFile,
   runCommand,
+  workspaceChangedFiles,
   workspaceDiff,
 } from "@devteam/workspace";
 
@@ -49,6 +51,20 @@ describe("workspace manager", () => {
     const diff = await workspaceDiff(workspacePath);
     expect(diff).toContain("src/notes.js");
     expect(diff).toContain("changed");
+  });
+
+  test("captures committed agent changes relative to the workspace base", async () => {
+    await writeFile(join(workspacePath, "src/notes.js"), "export const committed = true;\n", "utf8");
+    await git(workspacePath, ["add", "-A"]);
+    await git(workspacePath, ["commit", "-m", "agent commit"]);
+    const base = (await git(workspacePath, ["rev-parse", "HEAD~1"])).trim();
+    const diff = await workspaceDiff(workspacePath, base);
+    expect(diff).toContain("src/notes.js");
+    expect(diff).toContain("committed");
+    expect(await workspaceChangedFiles(workspacePath, base)).toContainEqual({
+      path: "src/notes.js",
+      status: "M",
+    });
   });
 
   test("rejects dangerous commands", async () => {

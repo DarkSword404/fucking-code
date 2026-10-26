@@ -72,14 +72,20 @@ export async function verifyWork(input: {
     id: process.env.AGENT_MODEL_ID ?? "deepseek-v4.1-flash",
   };
 
+  const maxDiffChars = Number(process.env.VERIFY_MAX_DIFF_CHARS ?? 120_000);
+  const maxSectionChars = Number(process.env.VERIFY_MAX_DIFF_SECTION_CHARS ?? 60_000);
+  const maxTestChars = Number(process.env.VERIFY_MAX_TEST_OUTPUT_CHARS ?? 30_000);
+  const maxSpecChars = Number(process.env.VERIFY_MAX_SPEC_CHARS ?? 30_000);
   const sections = input.diff.split(/^(?=diff --git )/m).filter(Boolean);
   const diffParts: string[] = [];
   let diffChars = 0;
   for (const section of sections) {
     const capped =
-      section.length > 12_000 ? `${section.slice(0, 12_000)}\n... (truncated)` : section;
-    if (diffChars + capped.length > 40_000) {
-      diffParts.push("... (more files omitted)");
+      section.length > maxSectionChars
+        ? `${section.slice(0, maxSectionChars)}\n... (file diff truncated)`
+        : section;
+    if (diffChars + capped.length > maxDiffChars) {
+      diffParts.push("... (remaining diff files omitted; see the diff artifact)");
       break;
     }
     diffParts.push(capped);
@@ -106,10 +112,10 @@ export async function verifyWork(input: {
         ? input.taskAcceptance.map((item) => `- ${item}`).join("\n")
         : "（没有单独列出，按任务描述判定）"
     }`,
-    `## 完整已确认规格（上下文，不要求本任务全部实现）\n${input.spec.slice(0, 18_000)}`,
+    `## 完整已确认规格（上下文，不要求本任务全部实现）\n${input.spec.slice(0, maxSpecChars)}`,
     `## 工作区变更文件\n${input.workspaceContext ?? "(unknown)"}`,
     `## Diff\n${diffDigest}`,
-    `## 测试输出\n${input.testOutput.slice(0, 4000)}`,
+    `## 测试输出\n${input.testOutput.slice(0, maxTestChars)}`,
   ].join("\n");
 
   const response = await opencodeFetch<{ data?: { text?: string } }>(

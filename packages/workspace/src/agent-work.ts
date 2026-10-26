@@ -18,7 +18,12 @@ import {
   workspaces,
 } from "@devteam/db";
 import { canonicalArtifactKey, uuidv7 } from "@devteam/domain";
-import { detectTestCommand, listFiles, runCommand, workspaceDiff } from "./manager.js";
+import {
+  detectTestCommand,
+  runCommand,
+  workspaceChangedFiles,
+  workspaceDiff,
+} from "./manager.js";
 import { verifyWork, type VerificationResult } from "./verification.js";
 
 export type EmitFn = (type: string, payload: Record<string, unknown>) => Promise<void>;
@@ -663,10 +668,10 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       });
     }
 
-    const diff = await workspaceDiff(workspace.path);
-    const changed = (await listFiles(workspace.path))
-      .filter((file) => file.status !== "tracked")
-      .map((file) => `${file.status} ${file.path}`);
+    const diff = await workspaceDiff(workspace.path, workspace.baseCommit);
+    const changed = (await workspaceChangedFiles(workspace.path, workspace.baseCommit)).map(
+      (file) => `${file.status} ${file.path}`,
+    );
     const workspaceContext = `Changed files:\n${
       changed.length ? changed.join("\n") : "(none)"
     }\nAll other files (including test/store.test.js if not listed above) are unchanged from the base commit.`;
@@ -832,10 +837,10 @@ export async function verifyTaskWork(input: WorkRunInput): Promise<void> {
       });
     }
 
-    const diff = await workspaceDiff(workspace.path);
-    const changed = (await listFiles(workspace.path))
-      .filter((file) => file.status !== "tracked")
-      .map((file) => `${file.status} ${file.path}`);
+    const diff = await workspaceDiff(workspace.path, workspace.baseCommit);
+    const changed = (await workspaceChangedFiles(workspace.path, workspace.baseCommit)).map(
+      (file) => `${file.status} ${file.path}`,
+    );
     const workspaceContext = `Changed files:\n${
       changed.length ? changed.join("\n") : "(none)"
     }\nAll other files (including test/store.test.js if not listed above) are unchanged from the base commit.`;

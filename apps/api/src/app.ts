@@ -2538,7 +2538,7 @@ app.get("/api/v1/workspaces/:workspaceId/file", async (c) => {
 
 app.get("/api/v1/workspaces/:workspaceId/diff", async (c) => {
   const { workspace } = await requireWorkspace(c);
-  const diff = await workspaceDiff(workspace.path);
+  const diff = await workspaceDiff(workspace.path, workspace.baseCommit);
   return c.json({ diff });
 });
 
