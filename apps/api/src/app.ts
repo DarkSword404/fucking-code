@@ -956,7 +956,11 @@ app.post("/api/v1/projects/:projectId/auto/start", async (c) => {
   const user = c.get("user");
   const { project } = await requireProjectEditor(c);
   if (!project.repoPath) {
-    throw new HttpError(400, "REPO_NOT_CONFIGURED", "Set a valid repository path before auto development.");
+    throw new HttpError(
+      400,
+      "REPO_NOT_CONFIGURED",
+      "项目还没有配置仓库路径。请先在项目设置里填写服务器上的 Git 仓库路径，再继续自动开发。",
+    );
   }
   if (await hasPendingDecisions(project.id)) {
     throw new HttpError(

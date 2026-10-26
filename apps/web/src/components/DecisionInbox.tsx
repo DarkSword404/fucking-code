@@ -2,6 +2,7 @@ import { For, Show } from "solid-js";
 import { ARTIFACT_LABELS, PHASE_LABELS } from "@devteam/contracts";
 import {
   acceptPendingTechnicalArtifacts,
+  autoStartError,
   canEditCurrentProject,
   closeDecisionInbox,
   mergeTaskWorkspace,
@@ -32,6 +33,7 @@ export function DecisionInbox() {
     snap()?.tasks.filter((item) => ["review", "testing"].includes(item.status)) ?? [];
   const count = () => pendingDecisionCount(snap());
   const canDecide = () => canEditCurrentProject();
+  const hasRepo = () => Boolean(snap()?.project.repoPath);
   const technical = () =>
     artifacts().filter((item) =>
       ["design", "api_contract", "plan", "note", "repo_analysis", "diff", "test_report", "spec_review"].includes(item.kind),
@@ -252,10 +254,18 @@ export function DecisionInbox() {
               <p>
                 自动开发已暂停。确认没有遗漏后，再继续下一个任务；不会在你点按钮前自动开跑。
               </p>
-              <Show when={snap()?.project.autoStartTasks === false}>
+              <Show when={!hasRepo()}>
+                <div class="decision-error">
+                  项目还没有配置仓库路径，暂时不能自动开发。请点顶部 ⚙ 项目设置，填写服务器上的 Git 仓库路径。
+                </div>
+              </Show>
+              <Show when={hasRepo() && snap()?.project.autoStartTasks === false}>
                 <button class="btn primary" onClick={() => void resumeAutoDevelopment()}>
                   继续自动开发
                 </button>
+              </Show>
+              <Show when={autoStartError()}>
+                <div class="decision-error">{autoStartError()}</div>
               </Show>
             </div>
           </Show>

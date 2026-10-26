@@ -56,6 +56,7 @@ export const [runs, setRuns] = createSignal<AgentRun[]>([]);
 export const [createOpen, setCreateOpen] = createSignal(false);
 export const [settingsOpen, setSettingsOpen] = createSignal(false);
 export const [decisionOpen, setDecisionOpen] = createSignal(false);
+export const [autoStartError, setAutoStartError] = createSignal<string | null>(null);
 export const [workingTaskId, setWorkingTaskId] = createSignal<string | null>(null);
 export const [turnParticipants, setTurnParticipants] = createSignal<string[] | null>(null);
 export interface PresenceUser {
@@ -97,11 +98,13 @@ function applySnapshot(snap: ProjectSnapshot): void {
 }
 
 export function openDecisionInbox(): void {
+  setAutoStartError(null);
   setDecisionOpen(true);
 }
 
 export function closeDecisionInbox(): void {
   setDecisionOpen(false);
+  setAutoStartError(null);
 }
 
 export function toast(message: string): void {
@@ -362,6 +365,7 @@ export async function loadProject(id: string): Promise<void> {
   const token = ++projectLoadToken;
   closeStream();
   setLoading(true);
+  setAutoStartError(null);
   setCurrentId(id);
   setSelectedArtifact(null);
   resetCodeState();
@@ -780,13 +784,23 @@ export function openTaskCode(task: Task): void {
 export async function resumeAutoDevelopment(): Promise<void> {
   const id = currentId();
   if (!id) return;
+  if (!snapshot()?.project.repoPath) {
+    const message = "项目还没有配置仓库路径，无法自动开发。请点顶部 ⚙ 项目设置，填写服务器上的 Git 仓库路径。";
+    setAutoStartError(message);
+    toast(message);
+    return;
+  }
+  setAutoStartError(null);
   try {
     const snap = await api.startAutoDevelopment(id);
     applySnapshot(snap);
+    setAutoStartError(null);
     setDecisionOpen(false);
     toast("自动开发已继续。");
   } catch (err) {
-    toast(messageOf(err));
+    const message = messageOf(err);
+    setAutoStartError(message);
+    toast(message);
   }
 }
 

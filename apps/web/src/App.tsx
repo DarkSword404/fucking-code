@@ -202,6 +202,22 @@ function Workspace() {
               <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待决策
             </button>
           </Show>
+          <Show
+            when={
+              !isAdminView() &&
+              !pending() &&
+              canEditCurrentProject() &&
+              snap()?.project.autoStartTasks === false
+            }
+          >
+            <button
+              class="btn primary"
+              onClick={() => void resumeAutoDevelopment()}
+              title="继续自动开发；如果还没有配置仓库路径，会提示先配置"
+            >
+              继续自动开发
+            </button>
+          </Show>
           <Show when={!isAdminView() && !pending() && canEditCurrentProject()}>
             <button
               class="btn"
