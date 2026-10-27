@@ -9,6 +9,7 @@ import {
   captureAcceptedSpec,
   decisions,
   memories,
+  projects,
   tasks,
   type RoomBundle,
   type RoleRow,
@@ -99,45 +100,63 @@ export async function applyActions(
       return;
     }
 
-    const targetType = `phase_transition:${target}`;
-    const [existing] = await db
-      .select({ id: approvals.id })
-      .from(approvals)
-      .where(
-        and(
-          eq(approvals.projectId, ctx.bundle.project.id),
-          eq(approvals.targetType, targetType),
-          eq(approvals.status, "pending"),
-        ),
-      )
-      .limit(1);
-    if (existing) {
-      result.notes.push(`phase proposal already pending: ${from} -> ${target}`);
-      return;
-    }
-
+    const nextVersion = ctx.bundle.project.version + 1;
     const id = uuidv7();
-    const title = `进入「${PHASE_LABELS[target]}」阶段？`;
+    const title = `进入「${PHASE_LABELS[target]}」阶段`;
     const proposalReason = reason.trim() || "AI 判断当前阶段可以继续推进。";
+    await db
+      .update(projects)
+      .set({ phase: target, updatedAt: new Date(), version: nextVersion })
+      .where(eq(projects.id, ctx.bundle.project.id));
+    ctx.bundle.project.phase = target;
+    ctx.bundle.project.version = nextVersion;
+
+    // Keep an approved approval row as the audit trail, but do not surface a
+    // client popup for a process transition.
     await db.insert(approvals).values({
       id,
       projectId: ctx.bundle.project.id,
-      targetType,
+      targetType: `phase_transition:${target}`,
       targetId: ctx.bundle.project.id,
-      targetVersion: ctx.bundle.project.version,
+      targetVersion: nextVersion,
       title,
-      status: "pending",
+      status: "approved",
       requestedBy: ctx.actorRole.key,
+      decidedBy: "Fucking Code 内部评审",
+      decidedAt: new Date(),
       reason: proposalReason,
     });
     result.approvalIds.push(id);
+    await ctx.emit(EVENT_TYPES.phaseChanged, {
+      from,
+      to: target,
+      by: ctx.actorRole.key,
+      internal: true,
+    });
     await ctx.emit(EVENT_TYPES.approvalChanged, {
       approvalId: id,
-      action: "requested",
+      action: "approved",
       title,
-      targetType,
+      targetType: `phase_transition:${target}`,
+      internal: true,
     });
-    result.notes.push(`phase proposal created: ${from} -> ${target} (waiting for client)`);
+    if (target === "review" || target === "deliver") {
+      const gateType = target === "review" ? "phase_review" : "delivery";
+      const gateTitle = target === "review" ? "代码评审" : "交付审批";
+      await db.insert(approvals).values({
+        id: uuidv7(),
+        projectId: ctx.bundle.project.id,
+        targetType: gateType,
+        targetVersion: nextVersion,
+        title: gateTitle,
+        status: "approved",
+        requestedBy: "system",
+        decidedBy: "Fucking Code 内部评审",
+        decidedAt: new Date(),
+        reason: "工程门禁由 QA / Lead 内部评审通过",
+      });
+    }
+    result.notes.push(`phase changed internally: ${from} -> ${target}`);
   }
 
   for (const action of orderedActions(actions)) {
@@ -449,8 +468,8 @@ export async function applyActions(
 
         case "set_phase": {
           const a = action as SetPhaseAction;
-          // Older prompts emitted set_phase. Treat it as a proposal so an
-          // agent can never bypass the client's phase confirmation.
+          // Older prompts emitted set_phase. Treat it as an internal phase
+          // request; gates are still checked above.
           await proposePhase(
             a.phase as WorkflowPhase,
             a.reason ?? "AI 建议推进到下一阶段。",

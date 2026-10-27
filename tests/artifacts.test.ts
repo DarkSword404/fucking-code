@@ -12,9 +12,9 @@ describe("artifact identity", () => {
     expect(canonicalArtifactKey("plan", "Team Pulse 实施计划 v1")).toBe("plan");
   });
 
-  test("only product intent waits for the client", () => {
-    expect(initialArtifactStatus("prd")).toBe("in_review");
-    expect(initialArtifactStatus("acceptance_criteria")).toBe("in_review");
+  test("all artifacts are internal review material", () => {
+    expect(initialArtifactStatus("prd")).toBe("accepted");
+    expect(initialArtifactStatus("acceptance_criteria")).toBe("accepted");
     expect(initialArtifactStatus("design")).toBe("accepted");
     expect(initialArtifactStatus("api_contract")).toBe("accepted");
     expect(initialArtifactStatus("plan")).toBe("accepted");

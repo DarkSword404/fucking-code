@@ -5,11 +5,9 @@
  * title or a "v2" suffix must create a new version, not a new artifact. Other
  * kinds (contracts, diffs, reports, notes) keep a title-derived key.
  */
-const CLIENT_REVIEW_KINDS = new Set(["prd", "acceptance_criteria"]);
-
-/** Technical evidence is reviewed internally; only product intent needs the client. */
-export function initialArtifactStatus(kind: string): string {
-  return CLIENT_REVIEW_KINDS.has(kind) ? "in_review" : "accepted";
+/** All artifacts are internal review material; product decisions use decisions. */
+export function initialArtifactStatus(_kind: string): string {
+  return "accepted";
 }
 
 const SINGLETON_KINDS = new Set([

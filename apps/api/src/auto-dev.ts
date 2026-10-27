@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Orchestrator, opencodeFetch } from "@devteam/agents";
 import {
   EVENT_TYPES,
@@ -252,18 +252,13 @@ export async function recoverOrphanedTasks(): Promise<void> {
     .update(agentRuns)
     .set({ status: "cancelled", endedAt: new Date(), error: "服务重启，运行已中断" })
     .where(eq(agentRuns.status, "running"));
-  // Technical evidence is internal review material. Migrate old pending
-  // artifacts so the client only sees PRD / acceptance decisions.
+  // Every artifact is internal review material. Migrate any leftover
+  // in_review rows so the client never gets an artifact acceptance popup.
   await db
     .update(artifacts)
     .set({ status: "accepted", updatedAt: new Date() })
-    .where(
-      and(
-        eq(artifacts.status, "in_review"),
-        notInArray(artifacts.kind, ["prd", "acceptance_criteria"]),
-      ),
-    );
-  // Phase review / delivery are engineering gates, not client decisions.
+    .where(eq(artifacts.status, "in_review"));
+  // Engineering approvals are internal as well.
   await db
     .update(approvals)
     .set({
@@ -272,12 +267,7 @@ export async function recoverOrphanedTasks(): Promise<void> {
       decidedAt: new Date(),
       reason: "工程门禁由 QA / Lead 内部评审通过",
     })
-    .where(
-      and(
-        eq(approvals.status, "pending"),
-        inArray(approvals.targetType, ["phase_review", "delivery"]),
-      ),
-    );
+    .where(eq(approvals.status, "pending"));
   const rows = await db
     .select({ task: tasks, workspace: workspaces })
     .from(tasks)
