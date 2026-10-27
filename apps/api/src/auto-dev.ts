@@ -766,6 +766,11 @@ export async function autoStartNext(projectId: string): Promise<void> {
     } catch {
       return;
     }
+    // A task that just reached review is not a human decision yet. Merge
+    // verified review tasks before treating review as a pending decision;
+    // otherwise the feedback window can persist autoStartTasks=false even
+    // after the internal merge succeeds.
+    await mergeInternallyReviewedTasks(projectId);
     if (await hasPendingDecisions(projectId)) {
       await pauseAutoDevelopment(projectId, "pending_decisions");
       return;
