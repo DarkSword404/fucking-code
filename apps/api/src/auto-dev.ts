@@ -42,6 +42,7 @@ const schedulerLocks = new Set<string>();
 const pausedProjects = new Set<string>();
 const phaseNudgeLocks = new Set<string>();
 const lastPhaseNudge = new Map<string, number>();
+const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
@@ -571,6 +572,9 @@ async function autoMergeReviewedTask(input: {
     .where(and(eq(workspaces.id, input.workspaceId), eq(workspaces.projectId, input.projectId)))
     .limit(1);
   if (!task || !workspace) return false;
+  if (internalMergeLocks.has(task.id)) return false;
+  internalMergeLocks.add(task.id);
+  try {
   const evidence = (task.evidence ?? {}) as Record<string, unknown>;
   const verification = evidence["verification"] as { verdict?: string } | undefined;
   // This is called from the workQueue callback's finally block, where the
@@ -667,6 +671,9 @@ async function autoMergeReviewedTask(input: {
       reason: "internal_merge_failed",
     }).catch(() => undefined);
     return false;
+  }
+  } finally {
+    internalMergeLocks.delete(task.id);
   }
 }
 
@@ -783,10 +790,17 @@ export async function autoStartAll(): Promise<void> {
 }
 
 export function startAutoDevelopmentLoop(): void {
+  const mergeReviewed = () => {
+    void mergeInternallyReviewedTasks().catch((error) => {
+      console.error("[auto-dev] periodic internal review failed", error);
+    });
+  };
   setTimeout(() => {
+    mergeReviewed();
     void autoStartAll();
   }, 4_000).unref();
   setInterval(() => {
+    mergeReviewed();
     void autoStartAll();
   }, 20_000).unref();
 }
