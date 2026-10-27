@@ -37,7 +37,12 @@ say "Installing Chromium for Playwright ${PLAYWRIGHT_VERSION}…"
 # Browser-only first: this does not need root. If the host is missing shared
 # libraries, run the printed install-deps command once with sudo.
 npx -y "playwright@${PLAYWRIGHT_VERSION}" install chromium
-warn "If Chromium cannot start, install system libraries once with:"
+# Playwright MCP defaults to the Chrome channel, so install Chrome too; the
+# workbench can always fall back to the Chromium binary.
+say "Installing Google Chrome for the Playwright MCP server…"
+npx -y "playwright@${PLAYWRIGHT_VERSION}" install chrome || \
+  warn "Chrome install failed; MCP will need --browser chrome with a system Chrome."
+warn "If Chromium/Chrome cannot start, install system libraries once with:"
 warn "  sudo npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium"
 
 if opencode mcp list 2>/dev/null | grep -qi playwright; then

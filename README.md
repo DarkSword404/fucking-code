@@ -107,7 +107,7 @@ npm run dev
 
 workbench 任务在隔离 Git worktree 中运行，拥有 shell、host 网络、文件读写，并产出验证报告；它不要求改业务代码。聊天里的成员不能声称自己点过页面——必须由 workbench 工位执行并回贴证据。
 
-浏览器工具是可选安装（Playwright + Chromium + Playwright MCP）：
+浏览器工具是可选安装（Playwright + Chromium/Chrome + Playwright MCP）：
 
 ```sh
 ./start.sh --install-browser   # 只安装浏览器工具
