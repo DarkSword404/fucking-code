@@ -4,3 +4,4 @@ export * from "./tasks.js";
 export * from "./roles.js";
 export * from "./actions.js";
 export * from "./artifacts.js";
+export * from "./policy.js";

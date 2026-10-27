@@ -97,15 +97,17 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
 }
 
 /**
- * When a gate becomes satisfied (e.g. the client accepts the PRD or merges the
- * last task), give the Lead one narrow turn to decide whether to ask the
- * client to enter/loop a phase. The turn may only emit request_phase; it cannot
- * create tasks, artifacts, approvals or change task state.
+ * When a gate becomes satisfied, give the Lead one narrow turn to decide
+ * internally whether to advance/loop the phase. The turn may only emit
+ * request_phase; it cannot create tasks, artifacts, approvals or change task
+ * state. Client confirmation is not part of engineering phase transitions.
  */
 export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
   if (phaseNudgeLocks.has(projectId)) return;
   const last = lastPhaseNudge.get(projectId) ?? 0;
-  if (Date.now() - last < 60_000) return;
+  // If the Lead declines, do not re-ask on every scheduler tick. Ten minutes
+  // is enough for new evidence to arrive without flooding the room.
+  if (Date.now() - last < 10 * 60_000) return;
   phaseNudgeLocks.add(projectId);
   try {
     const db = getDb();
@@ -172,7 +174,7 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     const content = [
       "阶段门禁已经满足。",
       `当前阶段：${PHASE_LABELS[from]}；可提议的下一阶段：${PHASE_LABELS[next]}。`,
-      "请 Lead 只判断是否发起阶段确认：如果证据足够，用 request_phase 向甲方提问并说明理由；如果还不该推进，就直接说明原因。",
+      "请在团队内部判断是否推进：如果证据足够，用 request_phase 发起内部阶段推进并说明理由；服务端校验门禁后会直接切换阶段，不需要甲方确认。如果还不该推进，就直接说明原因。",
       "不要创建产物、任务、审批或修改任务状态；只允许发起一个阶段提议。",
     ].join("\n");
     await insertMessage({
@@ -594,6 +596,27 @@ export async function startTaskForProject(
   }
 }
 
+async function ensurePreviewForTask(
+  project: ProjectRow,
+  task: TaskRow,
+): Promise<string | undefined> {
+  const existing = previewUrlForProject(project.id);
+  if (existing) return existing;
+  if (!project.repoPath) return undefined;
+  const text = `${task.title} ${task.description}`;
+  const needsPreview =
+    task.mode === "workbench" ||
+    /预览|seed|演示数据|revoke|撤销|走查|健康检查|回滚|登录|e2e|浏览器/i.test(text);
+  if (!needsPreview) return undefined;
+  try {
+    const preview = await startPreview(project.id, project.repoPath);
+    return preview.url;
+  } catch (error) {
+    console.error("[auto-dev] could not start preview for task", error);
+    return undefined;
+  }
+}
+
 async function enqueueTaskWork(
   project: ProjectRow,
   task: TaskRow,
@@ -602,6 +625,9 @@ async function enqueueTaskWork(
   const workspace = await ensureWorkspace(project, task);
   if (workQueue.isRunning(workspace.id)) return workspace;
   const emit = projectEmitter(project.tenantId, project.id);
+  const previewUrl = await ensurePreviewForTask(project, task);
+  const seedUser = process.env.SEED_USERNAME ?? "security";
+  const seedPassword = process.env.SEED_PASSWORD ?? "Security!2026";
   workQueue.enqueue(workspace.id, async (signal) => {
     let waitingForUser = false;
     try {
@@ -611,7 +637,9 @@ async function enqueueTaskWork(
         workspaceId: workspace.id,
         emit,
         signal,
-        previewUrl: previewUrlForProject(project.id) ?? undefined,
+        previewUrl,
+        seedUser,
+        seedPassword,
       });
     } finally {
       try {
@@ -679,6 +707,42 @@ async function enqueueTaskWork(
         .limit(1);
       const failed = fresh ? ["failed", "blocked"].includes(fresh.status) : false;
       if (failed) {
+        // A single failed/blocked task must not stop unrelated ready work. Park
+        // it for triage; only pause the whole project when nothing else can run.
+        const [readyWork] = await getDb()
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(eq(tasks.projectId, project.id), eq(tasks.status, "ready")))
+          .limit(1);
+        if (readyWork) {
+          const [room] = await getDb()
+            .select()
+            .from(rooms)
+            .where(eq(rooms.projectId, project.id))
+            .limit(1);
+          if (room) {
+            const messageId = uuidv7();
+            await insertMessage({
+              id: messageId,
+              tenantId: project.tenantId,
+              projectId: project.id,
+              roomId: room.id,
+              senderType: "system",
+              senderName: "系统",
+              type: "system_event",
+              content: `任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}，已挂起等待返工/取消；队列里还有其他 ready 任务，自动开发继续。`,
+              metadata: { kind: "task_parked", taskId: task.id },
+            });
+            await emit(EVENT_TYPES.messageCreated, {
+              messageId,
+              roomId: room.id,
+              senderType: "system",
+              senderName: "系统",
+              type: "system_event",
+            });
+          }
+          return;
+        }
         pausedProjects.add(project.id);
         const [currentProject] = await getDb()
           .select({ autoStartTasks: projects.autoStartTasks })
@@ -712,7 +776,7 @@ async function enqueueTaskWork(
               senderType: "system",
               senderName: "系统",
               type: "system_event",
-              content: `自动开发已暂停：任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}。修正问题并重新开启自动开发后再继续。`,
+              content: `自动开发已暂停：任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}，且没有其他可执行任务。修正问题并重新开启自动开发后再继续。`,
               metadata: { kind: "auto_paused", taskId: task.id },
             });
             await emit(EVENT_TYPES.messageCreated, {

@@ -36,6 +36,9 @@ export interface WorkRunInput {
   signal?: AbortSignal;
   /** Started preview URL for this project, when one exists. */
   previewUrl?: string;
+  /** Demo/test account injected by the platform; never ask the client for it. */
+  seedUser?: string;
+  seedPassword?: string;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,6 +102,8 @@ function buildWorkbenchPrompt(input: {
   roleName: string;
   roleKey: string;
   previewUrl?: string;
+  seedUser?: string;
+  seedPassword?: string;
   specContext?: string;
 }): string {
   return [
@@ -119,6 +124,10 @@ function buildWorkbenchPrompt(input: {
     input.previewUrl
       ? `- 平台已提供的预览地址：${input.previewUrl}（优先用它，不要再启动第二个实例）`
       : "- 平台没有现成预览地址；需要时在 worktree 内用随机 PORT 启动项目，测试完关闭",
+    input.seedUser ? `- 测试账号：${input.seedUser}` : "- 测试账号：security（本地默认）",
+    input.seedPassword
+      ? `- 测试口令：${input.seedPassword}（只用于登录，不要写入报告/产物）`
+      : "- 测试口令：由平台默认值提供，不要向甲方索要",
     "",
     "## 规则",
     "1. 这是只读验证：不要修改产品代码；证据/报告可以写到 docs/qa-evidence/；浏览器 profile/缓存必须放 /tmp，不要放进 worktree。",
@@ -140,6 +149,9 @@ function buildWorkPrompt(input: {
   specContext: string;
   memoryContext?: string;
   previousFailure?: string;
+  previewUrl?: string;
+  seedUser?: string;
+  seedPassword?: string;
 }): string {
   return [
     `你是 ${input.roleName}，在 Fucking Code 的一个隔离 Git worktree 中完成一个开发任务。`,
@@ -153,6 +165,12 @@ function buildWorkPrompt(input: {
     ...(input.acceptance.length ? input.acceptance.map((item) => `- ${item}`) : ["- 无额外验收标准"]),
     "",
     input.previousFailure ? `## 上次失败原因（必须先修复这一点）\n${input.previousFailure}` : "",
+    "## 运行环境（平台已注入，不要向甲方索要）",
+    input.previewUrl
+      ? `- 预览地址：${input.previewUrl}`
+      : "- 没有现成预览地址；需要时在 worktree 内用随机 PORT 启动项目，测试完关闭",
+    `- 测试账号：${input.seedUser ?? "security"}`,
+    `- 测试口令：${input.seedPassword ?? "（平台默认值）"}（只用于登录，不要写入报告/产物）`,
     "## 已确认的验收规格（必须满足，测试通过不等于规格满足）",
     input.specContext || "（没有绑定已确认规格，仅以测试为准）",
     input.memoryContext ? `\n## 项目长期记忆\n${input.memoryContext}` : "",
@@ -793,6 +811,8 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
             roleName: role.displayName,
             roleKey: role.key,
             previewUrl: input.previewUrl,
+            seedUser: input.seedUser,
+            seedPassword: input.seedPassword,
             specContext: specText,
           })
         : buildWorkPrompt({
@@ -805,6 +825,9 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
             specContext: specText,
             memoryContext,
             previousFailure: task.blockedReason ?? undefined,
+            previewUrl: input.previewUrl,
+            seedUser: input.seedUser,
+            seedPassword: input.seedPassword,
           });
 
     const prompted = await opencodeFetch(`/api/session/${sessionId}/prompt`, {
@@ -814,9 +837,10 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     });
     if (!prompted.ok) throw new Error(`session prompt failed (${prompted.status}): ${prompted.raw.slice(0, 300)}`);
 
-    const defaultTimeoutMinutes = task.mode === "workbench" ? 45 : 25;
     const codeTimeoutMs = Number(
-      process.env.CODE_TASK_TIMEOUT_MS ?? defaultTimeoutMinutes * 60 * 1000,
+      task.mode === "workbench"
+        ? process.env.WORKBENCH_TIMEOUT_MS ?? 45 * 60 * 1000
+        : process.env.CODE_TASK_TIMEOUT_MS ?? 25 * 60 * 1000,
     );
     const deadline = Date.now() + codeTimeoutMs;
     let info: Record<string, unknown> | null = null;

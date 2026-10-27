@@ -75,7 +75,7 @@ function actionChips(actions: ValidatedAgentAction[]): Array<{ kind: string; lab
         break;
       case "request_phase":
       case "set_phase":
-        chips.push({ kind: "phase", label: `阶段提议：${String(a.phase ?? "")}（待甲方确认）` });
+        chips.push({ kind: "phase", label: `阶段推进：${String(a.phase ?? "")}（内部）` });
         break;
       case "handoff":
         chips.push({ kind: "handoff", label: `交给 @${String(a.to ?? "")}` });

@@ -20,6 +20,7 @@ import {
   canonicalArtifactKey,
   gateRequirementsForTransition,
   initialArtifactStatus,
+  isEngineeringTopic,
   uuidv7,
   type AskUserAction,
   type BlockAction,
@@ -351,19 +352,32 @@ export async function applyActions(
             result.notes.push(`decision already exists: ${a.title}`);
             break;
           }
+          // Engineering choices are team-internal. Do not put them in front of
+          // the client and do not pause auto development for them.
+          const internal = isEngineeringTopic(`${a.title} ${a.rationale}`);
           const id = uuidv7();
           await db.insert(decisions).values({
             id,
             projectId: ctx.bundle.project.id,
             title: a.title,
-            status: "proposed",
+            status: internal ? "accepted" : "proposed",
             rationale: a.rationale,
             alternatives: a.alternatives,
             proposedBy: ctx.actorRole.key,
+            decidedBy: internal ? "Fucking Code 内部" : null,
+            decidedAt: internal ? new Date() : null,
             sourceMessageId: ctx.messageId,
           });
           result.decisionIds.push(id);
-          await ctx.emit(EVENT_TYPES.decisionChanged, { decisionId: id, action: "proposed", title: a.title });
+          await ctx.emit(EVENT_TYPES.decisionChanged, {
+            decisionId: id,
+            action: internal ? "accepted" : "proposed",
+            title: a.title,
+            internal,
+          });
+          if (internal) {
+            result.notes.push(`engineering decision auto-accepted internally: ${a.title}`);
+          }
           break;
         }
 
@@ -385,6 +399,9 @@ export async function applyActions(
             result.notes.push(`approval already pending: ${a.title}`);
             break;
           }
+          // Only product approvals belong to the client. Phase review, delivery,
+          // merge and other engineering gates are internal.
+          const clientFacing = /^product/i.test(a.targetType);
           const id = uuidv7();
           await db.insert(approvals).values({
             id,
@@ -393,17 +410,23 @@ export async function applyActions(
             targetId: a.targetId ?? null,
             targetVersion: ctx.bundle.project.version,
             title: a.title,
-            status: "pending",
+            status: clientFacing ? "pending" : "approved",
             requestedBy: ctx.actorRole.key,
+            decidedBy: clientFacing ? null : "Fucking Code 内部",
+            decidedAt: clientFacing ? null : new Date(),
             reason: a.reason,
           });
           result.approvalIds.push(id);
           await ctx.emit(EVENT_TYPES.approvalChanged, {
             approvalId: id,
-            action: "requested",
+            action: clientFacing ? "requested" : "approved",
             title: a.title,
             targetType: a.targetType,
+            internal: !clientFacing,
           });
+          if (!clientFacing) {
+            result.notes.push(`engineering approval auto-approved internally: ${a.title}`);
+          }
           break;
         }
 
@@ -477,6 +500,12 @@ export async function applyActions(
 
         case "ask_user": {
           const a = action as AskUserAction;
+          if (isEngineeringTopic(a.question)) {
+            result.notes.push(
+              "ask_user ignored: engineering detail belongs to the team; decide internally or create a workbench task",
+            );
+            break;
+          }
           result.askedUser = true;
           result.notes.push(`question: ${a.question}`);
           break;
