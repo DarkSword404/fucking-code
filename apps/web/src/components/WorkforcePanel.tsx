@@ -38,8 +38,9 @@ export function WorkforcePanel() {
       const kind = String(run.metadata?.["kind"] ?? "");
       const task = taskFor(run.metadata?.["taskId"]);
       if (kind === "code") {
+        const progress = typeof run.metadata?.["progress"] === "string" ? run.metadata["progress"] : "";
         return {
-          text: task ? `开发中：${task.title}` : "开发中：正在修改代码",
+          text: `${task ? `开发中：${task.title}` : "开发中：正在修改代码"}${progress ? ` · ${progress}` : ""}`,
           active: true,
           start: run.startedAt,
         };

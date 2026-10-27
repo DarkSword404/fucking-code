@@ -222,7 +222,7 @@ function handleEvent(event: WorkspaceEvent): void {
     if (kind !== "attention" && name) {
       if (payload.status === "running") {
         setThinking((prev) => (prev.includes(name) ? prev : [...prev, name]));
-        const reason = String(payload.reason ?? "").trim();
+        const reason = String(payload.reason ?? payload.progress ?? "").trim();
         setActivity((prev) => ({ ...prev, [roleKey]: reason }));
       } else {
         setThinking((prev) => prev.filter((n) => n !== name));

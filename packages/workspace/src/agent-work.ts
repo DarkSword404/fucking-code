@@ -38,6 +38,32 @@ export interface WorkRunInput {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function latestToolProgress(sessionId: string): Promise<string | null> {
+  const response = await opencodeFetch<{ data?: Array<Record<string, unknown>> }>(
+    `/api/session/${sessionId}/message?order=desc&limit=8`,
+    { timeoutMs: 6_000 },
+  ).catch(() => null);
+  const messages = response?.data?.data ?? [];
+  for (const message of messages) {
+    const parts = Array.isArray(message.content)
+      ? (message.content as Array<Record<string, unknown>>)
+      : [];
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const part = parts[i]!;
+      if (part.type !== "tool") continue;
+      const input = (part.input ?? {}) as Record<string, unknown>;
+      const detail = String(
+        input.command ?? input.path ?? input.query ?? input.description ?? "",
+      )
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 90);
+      return `${String(part.name ?? "tool")}${detail ? `：${detail}` : ""}`;
+    }
+  }
+  return null;
+}
+
 const CODE_PERMISSIONS = [
   { action: "shell", resource: "git push *", effect: "deny" },
   { action: "shell", resource: "git reset --hard *", effect: "deny" },
@@ -623,6 +649,30 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       if (res.ok) {
         info = (res.data as { data?: Record<string, unknown> } | null)?.data ?? null;
         if (info?.outcome) break;
+      }
+      const progress = await latestToolProgress(sessionId);
+      if (progress) {
+        await db
+          .update(agentRuns)
+          .set({
+            metadata: {
+              kind: "code",
+              taskId: task.id,
+              workspaceId: workspace.id,
+              sessionId,
+              progress,
+            },
+          })
+          .where(eq(agentRuns.id, runId));
+        await input.emit(EVENT_TYPES.runStatusChanged, {
+          runId,
+          roleKey: role.key,
+          roleName: role.displayName,
+          status: "running",
+          kind: "code",
+          taskId: task.id,
+          progress,
+        });
       }
     }
     if (input.signal?.aborted) {
