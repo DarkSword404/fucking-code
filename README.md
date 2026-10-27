@@ -72,6 +72,16 @@ Fucking Code 是一个以共享聊天室为核心的 AI 研发工作台。你以
 
 ### 启动
 
+最简单的方式：
+
+```sh
+./start.sh
+```
+
+它会检查 Node 版本、首次安装依赖、从 `.env.example` 复制 `.env`、构建前端并启动；打开 <http://127.0.0.1:8787>。需要热更新时用 `./start.sh --dev`，打开 <http://127.0.0.1:5174>。
+
+也可以手动启动：
+
 ```sh
 npm install
 cp .env.example .env
