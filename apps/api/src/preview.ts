@@ -166,6 +166,12 @@ export function previewForToken(token: string): PreviewState | undefined {
   return [...previews.values()].find((preview) => preview.token === token);
 }
 
+/** Relative preview URL for a project, if one is running. */
+export function previewUrlForProject(projectId: string): string | null {
+  const preview = previews.get(projectId);
+  return preview ? `/preview/${preview.token}/` : null;
+}
+
 export function stopPreview(projectId: string): void {
   const preview = previews.get(projectId);
   if (!preview) return;

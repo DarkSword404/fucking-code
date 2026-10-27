@@ -209,6 +209,7 @@ export const tasks = pgTable(
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     status: text("status").notNull().default("proposed"),
+    mode: text("mode").notNull().default("code"),
     priority: text("priority").notNull().default("medium"),
     roleKey: text("role_key"),
     createdFromMessageId: uuid("created_from_message_id"),

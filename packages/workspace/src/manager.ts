@@ -569,7 +569,12 @@ export async function detectTestCommand(root: string): Promise<string | null> {
   return null;
 }
 
-async function sandboxArgs(root: string, bin: string, args: string[]): Promise<string[]> {
+async function sandboxArgs(
+  root: string,
+  bin: string,
+  args: string[],
+  network = false,
+): Promise<string[]> {
   const workspace = resolve(root);
   const out: string[] = [
     "--ro-bind",
@@ -623,7 +628,9 @@ async function sandboxArgs(root: string, bin: string, args: string[]): Promise<s
       // no dependency directory
     }
   }
-  out.push("--unshare-all", "--die-with-parent", "--chdir", workspace, "--", bin, ...args);
+  out.push("--unshare-all");
+  if (network) out.push("--share-net");
+  out.push("--die-with-parent", "--chdir", workspace, "--", bin, ...args);
   return out;
 }
 
@@ -631,6 +638,7 @@ export async function runCommand(
   root: string,
   command: string,
   timeoutMs = 120_000,
+  options: { network?: boolean } = {},
 ): Promise<CommandResult> {
   const started = Date.now();
   const parts = command.trim().split(/\s+/);
@@ -678,7 +686,9 @@ export async function runCommand(
   }
 
   const sandbox = (process.env.SANDBOX_MODE ?? "process") === "bwrap" && binName !== "git";
-  const spawnArgs = sandbox ? await sandboxArgs(root, bin, parts.slice(1)) : parts.slice(1);
+  const spawnArgs = sandbox
+    ? await sandboxArgs(root, bin, parts.slice(1), options.network === true)
+    : parts.slice(1);
   return new Promise<CommandResult>((resolvePromise) => {
     const child = spawn(sandbox ? "bwrap" : bin, spawnArgs, {
       cwd: root,

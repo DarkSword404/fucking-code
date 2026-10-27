@@ -4,6 +4,7 @@ import {
   AGENT_ACTIONS,
   ARTIFACT_KINDS,
   PRIORITIES,
+  TASK_MODES,
   WORKFLOW_PHASES,
   type AgentAction,
 } from "@devteam/contracts";
@@ -19,6 +20,7 @@ const createTask = z.object({
   description: z.string().max(8000).default(""),
   role: roleKey.optional(),
   priority: z.enum(PRIORITIES as unknown as [string, ...string[]]).default("medium"),
+  mode: z.enum(TASK_MODES as unknown as [string, ...string[]]).default("code"),
   acceptance: z.array(z.string().max(500)).max(20).default([]),
 });
 

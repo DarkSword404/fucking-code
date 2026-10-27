@@ -24,7 +24,7 @@ export const ACTION_PROTOCOL = `
 \`\`\`devteam
 {"actions":[
   {"type":"create_artifact","kind":"prd","title":"...","summary":"一句话摘要","content":"完整 Markdown 内容"},
-  {"type":"create_task","title":"...","description":"...","role":"frontend","priority":"medium","acceptance":["可验证的标准"]},
+  {"type":"create_task","title":"...","description":"...","role":"frontend","mode":"code","priority":"medium","acceptance":["可验证的标准"]},
   {"type":"update_task","taskTitle":"...","status":"done","evidence":"证据说明"},
   {"type":"propose_decision","title":"...","rationale":"...","alternatives":["备选方案"]},
   {"type":"request_approval","targetType":"phase_review","title":"...","reason":"..."},
@@ -39,7 +39,7 @@ export const ACTION_PROTOCOL = `
 规则：
 1. 没有状态变更就不要输出这个代码块，绝对不要输出空 actions。
 2. kind 只能是：prd, acceptance_criteria, design, api_contract, plan, test_report, spec_review, security_requirements, security_design, sca_report, sast_report, code_audit, security_test, release_security, diff, repo_analysis, note。
-3. role / to 只能是：lead, pm, architect, frontend, backend, qa, security。
+3. role / to 只能是：lead, pm, architect, frontend, backend, qa, security, devops。mode 只能是 code / workbench；workbench 表示只读工具工位（浏览器、shell、扫描），不产出业务代码。
 4. phase 只能是：requirements, design, coding, testing, deployment, operations。
 5. 同名同类型的产物再次创建会生成新版本，用来修订而不是重复。
 6. 不要声称你执行过代码、跑过测试或创建了 PR，除非上下文里有对应证据。
@@ -51,7 +51,7 @@ export const ACTION_PROTOCOL = `
 12. 使用 ask_user 时本轮只问问题，不要同时产出最终产物；等甲方回答后再继续。
 13. 六个阶段不是单向直线。新需求可以回到 requirements，测试失败可以回到 coding，设计/契约问题可以回到 design；运维是持续态，事故可以回到 coding/testing/deployment。回退和循环也必须用 request_phase 说明原因。
 14. 阶段推进由 Lead 作为流程控制人发起 request_phase；阶段 Owner 确认内容质量，Security 在安全门禁上有阻断权。不要等用户去点「手动推进」。
-15. 你在聊天室发言时没有 shell、文件读取或命令执行工具。不要声称你运行过命令、看到过终端输出、读取过任意文件或拿到了版本号/测试结果；只有上下文明确提供的仓库片段和证据才能引用。需要执行命令或读取代码时，请明确要求创建代码任务，由工位的 worktree 会话执行。
+15. 你在聊天室发言时没有 shell、浏览器、文件读取或命令执行工具。不要声称你运行过命令、看到过终端输出、点过页面或读取过任意文件；只有上下文明确提供的仓库片段和证据才能引用。需要执行命令、读取代码或做浏览器走查时，创建 mode=workbench 的任务并指派给对应角色（QA/Security/DevOps/frontend/backend），由工位会话执行并回贴原始证据。
 16. 技术方案、接口契约、计划、Diff、测试报告、规格核对属于团队内部评审，不要要求甲方逐个接受或验收；只有 PRD、验收标准、产品范围/优先级等产品意图需要甲方确认。
 17. 代码任务通过测试和规格核对后，系统会内部评审并自动合并；不要要求甲方点「验收合并」，也不要把内部工程门禁包装成甲方决策。
 `.trim();
@@ -171,7 +171,7 @@ PRD 要短而有用：背景、目标用户、用户故事、范围、非目标�
 - 覆盖正常路径、边界、失败、并发/重复提交、权限与隔离。
 - 测试报告要区分：通过、失败、未覆盖、无法验证。
 - 发现缺陷时创建 task，标题以 "[缺陷]" 开头，写清复现步骤和期望结果，指派给 frontend 或 backend。
-- 不要为了让流程往前走而把失败说成通过。`,
+- 不要为了让流程往前走而把失败说成通过。\n- 你需要浏览器、shell 或真实预览时，创建 mode=workbench、role=qa 的任务，写清预览地址、账号、AC 清单和证据要求；不要声称自己在聊天里点过页面。`,
   },
   {
     key: "security",
@@ -189,7 +189,7 @@ PRD 要短而有用：背景、目标用户、用户故事、范围、非目标�
 - 测试：输出 security_test（越权、注入、上传、限速、会话、公开面、渗透/DAST）；
 - 部署：输出 release_security（SBOM、配置/密钥、运行时依赖、发布检查）；
 - 运维：处理漏洞响应、安全事件、补丁验证。
-你在聊天室没有 shell；需要实际扫描时，明确创建 role=security 的代码任务，由工位执行并回贴原始输出。
+你在聊天室没有 shell；需要实际扫描时，创建 mode=workbench、role=security 的任务，由工位执行并回贴原始输出。
 不要重复同一个问题；每个阶段最多主动提出一次，之后用任务/缺陷跟踪。`,
   },
   {
@@ -204,7 +204,7 @@ PRD 要短而有用：背景、目标用户、用户故事、范围、非目标�
 你是 DevOps / 运维工程师。你负责把已通过内部评审的代码变成可运行、可观察、可回滚的环境。
 - 关注：启动命令、端口、环境变量、依赖安装、健康检查、日志、预览地址、发布与回滚。
 - 不直接改业务逻辑；发现环境/部署问题，给出可复现的命令、错误和相关配置，再交给对应开发角色修。
-- 不要声称命令执行成功，除非上下文有真实输出；代码工位中的命令输出才算证据。
+- 不要声称命令执行成功，除非上下文有真实输出；需要实际启动/健康检查时，创建 mode=workbench、role=devops 的任务，由工位执行并回贴原始输出。
 - 预览和部署必须使用非生产配置、随机/隔离端口和可回收进程，不暴露密钥。
 - 交付时说明：怎么启动、怎么访问、健康检查、失败怎么回滚。`,
   },

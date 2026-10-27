@@ -51,6 +51,7 @@ export function TasksView() {
   const [title, setTitle] = createSignal("");
   const [desc, setDesc] = createSignal("");
   const [role, setRole] = createSignal("backend");
+  const [mode, setMode] = createSignal<"code" | "workbench">("code");
   const [acceptance, setAcceptance] = createSignal("");
   const [pendingDelete, setPendingDelete] = createSignal<Task | null>(null);
   const [deleting, setDeleting] = createSignal(false);
@@ -155,6 +156,9 @@ export function TasksView() {
                           <div class="task-card">
                             <div class="task-title">{task.title}</div>
                             <div class="task-meta">
+                              <Show when={task.mode === "workbench"}>
+                                <span class="badge warn">工具工位</span>
+                              </Show>
                               <Show when={role}>
                                 <span
                                   class="badge"
@@ -617,6 +621,25 @@ export function TasksView() {
               </select>
             </div>
             <div class="field">
+              <label>执行方式</label>
+              <select
+                value={mode()}
+                onChange={(event) =>
+                  setMode(event.currentTarget.value === "workbench" ? "workbench" : "code")
+                }
+                style={{
+                  width: "100%",
+                  background: "#14181d",
+                  border: "1px solid #232a32",
+                  "border-radius": "8px",
+                  padding: "7px 9px",
+                }}
+              >
+                <option value="code">编码任务</option>
+                <option value="workbench">工具工位（只读验证 / 测试 / 扫描）</option>
+              </select>
+            </div>
+            <div class="field">
               <label>验收标准（一行一条）</label>
               <textarea
                 rows={3}
@@ -637,6 +660,7 @@ export function TasksView() {
                     title: title().trim(),
                     description: desc().trim(),
                     roleKey: role(),
+                    mode: mode(),
                     priority: "medium",
                     acceptance: acceptance()
                       .split("\n")
@@ -646,6 +670,7 @@ export function TasksView() {
                   setTitle("");
                   setDesc("");
                   setAcceptance("");
+                  setMode("code");
                   setNewOpen(false);
                 }}
               >

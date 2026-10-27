@@ -241,6 +241,7 @@ export const api = {
       description?: string;
       roleKey?: string;
       priority?: string;
+      mode?: "code" | "workbench";
       acceptance?: string[];
     },
   ) =>

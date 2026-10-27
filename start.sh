@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fucking Code one-click local launcher.
 #
-#   ./start.sh          build once, then serve the app on http://127.0.0.1:8787
-#   ./start.sh --dev    hot-reload mode (API + Vite) on http://127.0.0.1:5174
-#   ./start.sh --help   show this help
+#   ./start.sh                 build once, then serve the app on http://127.0.0.1:8787
+#   ./start.sh --dev           hot-reload mode (API + Vite) on http://127.0.0.1:5174
+#   ./start.sh --with-browser  install Playwright MCP + Chromium, then start
+#   ./start.sh --install-browser  install browser tools only and exit
+#   ./start.sh --help          show this help
 #
 # Everything it creates at runtime (database, repositories, worktrees, logs,
 # build output) stays in gitignored paths. No credentials are written to disk
@@ -13,11 +15,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="start"
+WITH_BROWSER=0
+INSTALL_BROWSER_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --dev) MODE="dev" ;;
+    --with-browser) WITH_BROWSER=1 ;;
+    --install-browser) INSTALL_BROWSER_ONLY=1 ;;
     --help|-h)
-      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -59,6 +65,15 @@ read_env_port() {
 }
 PORT_VALUE="${PORT:-$(read_env_port)}"
 PORT_VALUE="${PORT_VALUE:-8787}"
+
+if [ "$INSTALL_BROWSER_ONLY" = "1" ]; then
+  exec bash scripts/install-agent-browser.sh
+fi
+
+if [ "$WITH_BROWSER" = "1" ]; then
+  say "Installing optional browser tools for QA/Security/DevOps…"
+  bash scripts/install-agent-browser.sh
+fi
 
 if [ "$MODE" = "dev" ]; then
   say "Dev mode: API + Vite (hot reload)."

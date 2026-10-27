@@ -96,6 +96,32 @@ npm run dev
 2. 创建本地用户、示例项目 **Acme Notes**、主聊天室和默认团队；
 3. 在 `data/repos/acme-notes` 创建一个带失败测试的小型 Git 仓库，作为代码任务的目标。
 
+### Agent 工具与 workbench
+
+聊天室里的成员默认是纯文本回合：他们没有 shell、浏览器，也不会直接改代码。需要真实执行时，让对应角色创建 **`mode=workbench`** 的任务：
+
+- **QA**：浏览器走查、点击、截图、执行测试；
+- **Security**：SCA/SAST、依赖扫描、渗透验证；
+- **DevOps**：启动服务、健康检查、发布/回滚验证；
+- **Frontend/Backend**：需要只读复现或读代码时也可以申请 workbench。
+
+workbench 任务在隔离 Git worktree 中运行，拥有 shell、host 网络、文件读写，并产出验证报告；它不要求改业务代码。聊天里的成员不能声称自己点过页面——必须由 workbench 工位执行并回贴证据。
+
+浏览器工具是可选安装（Playwright + Chromium + Playwright MCP）：
+
+```sh
+./start.sh --install-browser   # 只安装浏览器工具
+./start.sh --with-browser      # 安装后启动
+```
+
+安装后如果 OpenCode 已在运行，重启一次 OpenCode 服务，让新 MCP 生效。国内网络如果 Playwright CDN 很慢，可以先设置镜像：
+
+```sh
+PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright ./scripts/install-agent-browser.sh
+```
+
+没有浏览器时，workbench 仍可用 shell/HTTP 做接口级验证，但 UI 走查项必须标「未覆盖」。
+
 ### 两种 Agent 运行时
 
 ```env
@@ -187,6 +213,7 @@ npm test               # 单元测试（43 个）
 npm run build          # 构建 Web
 npm start              # 生产模式，API 同时托管 apps/web/dist
 npm run user:password  # 设置 seed 账号密码，例如 npm run user:password -- 'new-pass'
+./start.sh --install-browser  # 可选：安装 QA/Security/DevOps 的浏览器工具
 npm run db:reset       # 清空本地数据库（下次启动重新 seed）
 ```
 

@@ -184,6 +184,7 @@ export async function applyActions(
             title: a.title,
             description: a.description,
             status: a.role ? "ready" : "proposed",
+            mode: a.mode ?? "code",
             priority: a.priority,
             roleKey: a.role ?? null,
             createdFromMessageId: ctx.messageId,

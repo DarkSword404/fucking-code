@@ -37,7 +37,7 @@ import {
   validateRepoPath,
 } from "@devteam/workspace";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
-import { startPreview } from "./preview.js";
+import { previewUrlForProject, startPreview } from "./preview.js";
 
 const schedulerLocks = new Set<string>();
 /** Projects with a task in the middle of workspace allocation. */
@@ -611,6 +611,7 @@ async function enqueueTaskWork(
         workspaceId: workspace.id,
         emit,
         signal,
+        previewUrl: previewUrlForProject(project.id) ?? undefined,
       });
     } finally {
       try {

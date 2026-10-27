@@ -22,6 +22,9 @@ export const PHASE_LABELS: Record<WorkflowPhase, string> = {
   operations: "运维中",
 };
 
+export const TASK_MODES = ["code", "workbench"] as const;
+export type TaskMode = (typeof TASK_MODES)[number];
+
 export const TASK_STATUSES = [
   "proposed",
   "ready",
@@ -268,6 +271,7 @@ export interface Task {
   title: string;
   description: string;
   status: TaskStatus;
+  mode?: TaskMode;
   priority: Priority;
   roleKey: string | null;
   createdFromMessageId: string | null;

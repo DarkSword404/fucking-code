@@ -1560,6 +1560,7 @@ const createTaskSchema = z.object({
   description: z.string().max(20_000).optional(),
   roleKey: z.string().max(40).nullable().optional(),
   priority: z.enum(PRIORITIES as unknown as [string, ...string[]]).optional(),
+  mode: z.enum(["code", "workbench"]).optional(),
   acceptance: z.array(z.string().max(500)).max(20).optional(),
 });
 
@@ -1584,6 +1585,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (c) => {
       title: body.title,
       description: body.description ?? "",
       status: "ready",
+      mode: body.mode ?? "code",
       priority: body.priority ?? "medium",
       roleKey: body.roleKey ?? null,
       requirementVersion: spec.prd.version,

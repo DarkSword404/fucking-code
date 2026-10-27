@@ -34,6 +34,8 @@ export interface WorkRunInput {
   workspaceId: string;
   emit: EmitFn;
   signal?: AbortSignal;
+  /** Started preview URL for this project, when one exists. */
+  previewUrl?: string;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,6 +78,57 @@ const CODE_PERMISSIONS = [
   { action: "webfetch", resource: "*", effect: "deny" },
   { action: "websearch", resource: "*", effect: "deny" },
 ];
+
+const WORKBENCH_PERMISSIONS = [
+  { action: "shell", resource: "git push *", effect: "deny" },
+  { action: "shell", resource: "git reset --hard *", effect: "deny" },
+  { action: "shell", resource: "rm -rf *", effect: "deny" },
+  { action: "external_directory", resource: "*", effect: "deny" },
+  { action: "read", resource: "*.env", effect: "deny" },
+  { action: "read", resource: "*.env.*", effect: "deny" },
+  { action: "question", resource: "*", effect: "deny" },
+  { action: "subagent", resource: "*", effect: "deny" },
+];
+
+function buildWorkbenchPrompt(input: {
+  projectName: string;
+  projectDescription: string;
+  taskTitle: string;
+  taskDescription: string;
+  acceptance: string[];
+  roleName: string;
+  roleKey: string;
+  previewUrl?: string;
+  specContext?: string;
+}): string {
+  return [
+    `你是 ${input.roleName}，在 Fucking Code 的隔离工作区执行只读验证任务。`,
+    "",
+    `项目：${input.projectName}`,
+    `项目背景：${input.projectDescription}`,
+    `任务：${input.taskTitle}`,
+    `描述：${input.taskDescription}`,
+    "验收/检查项：",
+    ...(input.acceptance.length ? input.acceptance.map((item) => `- ${item}`) : ["- 按任务描述执行"]),
+    input.specContext ? `\n## 已确认的验收规格\n${input.specContext}` : "",
+    "",
+    "## 你拥有的工具",
+    "- shell（在 worktree 内执行命令，可用 host 网络；可以 curl 预览地址、启动项目自带测试）",
+    "- 文件读写（工作区内的测试/证据文件）",
+    "- 如果 OpenCode 配置了 Playwright/browser MCP，可以直接打开、点击、截图页面",
+    input.previewUrl
+      ? `- 平台已提供的预览地址：${input.previewUrl}（优先用它，不要再启动第二个实例）`
+      : "- 平台没有现成预览地址；需要时在 worktree 内用随机 PORT 启动项目，测试完关闭",
+    "",
+    "## 规则",
+    "1. 这是只读验证：不要修改产品代码；证据/报告可以写到 docs/qa-evidence/；浏览器 profile/缓存必须放 /tmp，不要放进 worktree。",
+    "2. 不要访问或修改主仓库 data/、不要读取 .env、不要 git push/merge、不要 rm -rf。",
+    "3. 每一条结论必须有证据：命令 + 原始输出，或截图路径 + 现象；不要用“看起来”代替。",
+    "4. 页面走查要按验收顺序执行；需要登录时先说明用的是哪个测试账号。",
+    "5. 无法覆盖的条目明确写“未覆盖/无法执行”，不要猜通过。",
+    "6. 结束时给出：逐条结果、未覆盖项、可复现步骤、剩余风险。",
+  ].join("\n");
+}
 
 function buildWorkPrompt(input: {
   projectName: string;
@@ -216,6 +269,7 @@ async function finalizeWork(input: {
   verification: VerificationResult | null;
   diff: string;
   summary: string;
+  transcript?: string;
   outcome: string;
   sessionId: string | null;
   toolCalls: number;
@@ -238,6 +292,7 @@ async function finalizeWork(input: {
     verification,
     diff,
     summary,
+    transcript,
     outcome,
     sessionId,
     toolCalls,
@@ -245,8 +300,9 @@ async function finalizeWork(input: {
     emit,
   } = input;
   const mode = input.mode ?? "code";
+    const isWorkbench = task.mode === "workbench";
     const testsPassed = !testResult || testResult.status === "passed";
-    const specPassed = verification ? verification.verdict === "pass" : true;
+    const specPassed = isWorkbench ? true : verification ? verification.verdict === "pass" : true;
     const success = (outcome === "succeeded" || outcome === "verified") && testsPassed && specPassed;
 
     const verificationNote =
@@ -303,7 +359,7 @@ async function finalizeWork(input: {
     });
 
     let reportArtifactId: string | null = null;
-    if (testResult) {
+    if (testResult && !isWorkbench) {
       reportArtifactId = await upsertArtifact({
         projectId: project.id,
         kind: "test_report",
@@ -320,6 +376,32 @@ async function finalizeWork(input: {
           "```text",
           testResult.output.slice(0, 20_000) || "(no output)",
           "```",
+        ].join("\n"),
+        createdBy: role.key,
+        messageId,
+        emit,
+      });
+    }
+
+    if (isWorkbench) {
+      reportArtifactId = await upsertArtifact({
+        projectId: project.id,
+        kind: "test_report",
+        title: `验证报告：${task.title}`,
+        summary: `${role.displayName} · ${success ? "完成" : "未完成"} · ${toolCalls} 次工具调用`,
+        content: [
+          `# 验证报告：${task.title}`,
+          "",
+          `- 执行角色：${role.displayName}`,
+          `- 运行结果：${outcome}`,
+          `- 测试命令：${testResult ? `${testResult.command}（${testResult.status}）` : "未运行"}`,
+          `- 工具调用：${toolCalls}`,
+          "",
+          "## 验证记录",
+          transcript?.trim() || summary || "（无输出）",
+          "",
+          "## 测试原始输出",
+          testResult ? "```text\n" + testResult.output.slice(0, 20_000) + "\n```" : "（未运行测试命令）",
         ].join("\n"),
         createdBy: role.key,
         messageId,
@@ -360,7 +442,7 @@ async function finalizeWork(input: {
       });
     }
 
-    let finalStatus: string = success ? "review" : "failed";
+    let finalStatus: string = success ? (isWorkbench ? "done" : "review") : "failed";
     await db
       .update(tasks)
       .set({
@@ -662,7 +744,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
         title: `[${project.name}] ${task.title}`,
         location: { directory: workspace.path },
         model: { providerID: provider, id: modelId },
-        permissions: CODE_PERMISSIONS,
+        permissions: task.mode === "workbench" ? WORKBENCH_PERMISSIONS : CODE_PERMISSIONS,
         metadata: { devteamProjectId: project.id, devteamTaskId: task.id, runId },
       }),
       timeoutMs: 30_000,
@@ -700,17 +782,30 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       .map((memory) => `- [${memory.type}] ${memory.title}：${memory.content.slice(0, 600)}`)
       .join("\n");
 
-    const prompt = buildWorkPrompt({
-      projectName: project.name,
-      projectDescription: project.description,
-      taskTitle: task.title,
-      taskDescription: task.description,
-      acceptance: task.acceptance,
-      roleName: role.displayName,
-      specContext: specText,
-      memoryContext,
-      previousFailure: task.blockedReason ?? undefined,
-    });
+    const prompt =
+      task.mode === "workbench"
+        ? buildWorkbenchPrompt({
+            projectName: project.name,
+            projectDescription: project.description,
+            taskTitle: task.title,
+            taskDescription: task.description,
+            acceptance: task.acceptance,
+            roleName: role.displayName,
+            roleKey: role.key,
+            previewUrl: input.previewUrl,
+            specContext: specText,
+          })
+        : buildWorkPrompt({
+            projectName: project.name,
+            projectDescription: project.description,
+            taskTitle: task.title,
+            taskDescription: task.description,
+            acceptance: task.acceptance,
+            roleName: role.displayName,
+            specContext: specText,
+            memoryContext,
+            previousFailure: task.blockedReason ?? undefined,
+          });
 
     const prompted = await opencodeFetch(`/api/session/${sessionId}/prompt`, {
       method: "POST",
@@ -719,7 +814,10 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     });
     if (!prompted.ok) throw new Error(`session prompt failed (${prompted.status}): ${prompted.raw.slice(0, 300)}`);
 
-    const codeTimeoutMs = Number(process.env.CODE_TASK_TIMEOUT_MS ?? 25 * 60 * 1000);
+    const defaultTimeoutMinutes = task.mode === "workbench" ? 45 : 25;
+    const codeTimeoutMs = Number(
+      process.env.CODE_TASK_TIMEOUT_MS ?? defaultTimeoutMinutes * 60 * 1000,
+    );
     const deadline = Date.now() + codeTimeoutMs;
     let info: Record<string, unknown> | null = null;
     while (Date.now() < deadline) {
@@ -790,6 +888,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       }))
       .filter((entry) => entry.text);
     const summary = assistantWithText.at(-1)?.text.trim() ?? "";
+    const transcript = assistantWithText.map((entry) => entry.text).join("\n\n---\n\n");
     const toolCalls = assistant.reduce(
       (total, m) =>
         total +
@@ -801,7 +900,11 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
 
     if (input.signal?.aborted) throw new Error("code run cancelled by user");
     const testCommand = await detectTestCommand(workspace.path);
-    const testResult = testCommand ? await runCommand(workspace.path, testCommand, 180_000) : null;
+    const testResult = testCommand
+      ? await runCommand(workspace.path, testCommand, 180_000, {
+          network: task.mode === "workbench",
+        })
+      : null;
     let testRunId: string | null = null;
     if (testResult) {
       testRunId = uuidv7();
@@ -817,17 +920,21 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       });
     }
 
-    const diff = await workspaceDiff(workspace.path, workspace.baseCommit);
-    const changed = (await workspaceChangedFiles(workspace.path, workspace.baseCommit)).map(
-      (file) => `${file.status} ${file.path}`,
-    );
+    const diff =
+      task.mode === "workbench" ? "" : await workspaceDiff(workspace.path, workspace.baseCommit);
+    const changed =
+      task.mode === "workbench"
+        ? []
+        : (await workspaceChangedFiles(workspace.path, workspace.baseCommit)).map(
+            (file) => `${file.status} ${file.path}`,
+          );
     const workspaceContext = `Changed files:\n${
       changed.length ? changed.join("\n") : "(none)"
     }\nAll other files (including test/store.test.js if not listed above) are unchanged from the base commit.`;
     const outcome = String(info.outcome);
 
     let verification: VerificationResult | null = null;
-    if (specText) {
+    if (specText && task.mode !== "workbench") {
       try {
         verification = await verifyWork({
           taskTitle: task.title,
@@ -869,6 +976,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       verification,
       diff,
       summary,
+      transcript,
       outcome,
       sessionId,
       toolCalls,
@@ -994,7 +1102,11 @@ export async function verifyTaskWork(input: WorkRunInput): Promise<void> {
   try {
     if (input.signal?.aborted) throw new Error("verification cancelled by user");
     const testCommand = await detectTestCommand(workspace.path);
-    const testResult = testCommand ? await runCommand(workspace.path, testCommand, 180_000) : null;
+    const testResult = testCommand
+      ? await runCommand(workspace.path, testCommand, 180_000, {
+          network: task.mode === "workbench",
+        })
+      : null;
     const testRunId = testResult ? uuidv7() : null;
     if (testResult && testRunId) {
       await db.insert(testRuns).values({

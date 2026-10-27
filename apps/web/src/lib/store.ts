@@ -1139,6 +1139,7 @@ export async function createTask(input: {
   description?: string;
   roleKey?: string;
   priority?: string;
+  mode?: "code" | "workbench";
   acceptance?: string[];
 }): Promise<void> {
   const id = currentId();
