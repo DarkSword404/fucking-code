@@ -118,6 +118,10 @@ function applySnapshot(snap: ProjectSnapshot): void {
   setRuns(snap.runs);
   const count = pendingDecisionCount(snap);
   if (count > 0 && lastPendingDecisionCount === 0) setDecisionOpen(true);
+  // A modal left open from an older run must not survive after the last
+  // technical item was auto-reviewed. The topbar keeps the explicit
+  // "continue auto development" action.
+  if (count === 0) setDecisionOpen(false);
   lastPendingDecisionCount = count;
 }
 
