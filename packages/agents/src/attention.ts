@@ -1,6 +1,6 @@
 import type { WorkflowPhase } from "@devteam/contracts";
 import type { RoomBundle } from "@devteam/db";
-import { PHASE_DESCRIPTIONS } from "@devteam/domain";
+import { PHASE_DESCRIPTIONS, STAGE_POLICIES } from "@devteam/domain";
 
 export interface AttentionDecision {
   speak: boolean;
@@ -13,15 +13,12 @@ export interface RoomTrigger {
 }
 
 const PHASE_OWNER: Record<string, string> = {
-  intake: "pm",
-  discovery: "pm",
+  requirements: "pm",
   design: "architect",
-  planning: "lead",
-  build: "lead",
-  test: "qa",
-  review: "lead",
-  deliver: "lead",
-  done: "lead",
+  coding: "lead",
+  testing: "qa",
+  deployment: "devops",
+  operations: "devops",
 };
 
 const ROLE_KEYWORDS: Record<string, RegExp> = {
@@ -133,6 +130,7 @@ export function buildAttentionPrompt(
   const role = bundle.roles.find((r) => r.key === roleKey);
   if (!role) throw new Error(`unknown role: ${roleKey}`);
   const phase = bundle.project.phase as WorkflowPhase;
+  const stagePolicy = STAGE_POLICIES[phase];
 
   const roster = bundle.roles
     .filter((r) => r.enabled && (!participantKeys || participantKeys.has(r.key)))
@@ -159,6 +157,10 @@ export function buildAttentionPrompt(
     `项目：${bundle.project.name}`,
     `项目描述：${truncate(bundle.project.description || "（暂无）", 600)}`,
     `当前阶段：${phase} — ${PHASE_DESCRIPTIONS[phase]}`,
+    `阶段主责：${stagePolicy.owner}；正常参与：${stagePolicy.participants.join("、")}；咨询：${stagePolicy.consult.join("、") || "无"}；默认静默：${stagePolicy.silent.join("、") || "无"}。`,
+    stagePolicy.silent.includes(role.key)
+      ? "你在这个阶段默认不发言。只有被 @、收到 handoff、或用户明确点名时才介入。"
+      : "",
     `本次房间成员：${roster || "（只有你）"}`,
     "房间外的人不会看到这条消息。",
     repoContext ? `\n## 仓库上下文\n${truncate(repoContext, 6000)}` : "",

@@ -66,7 +66,7 @@ export async function createProjectForUser(input: {
       name: input.name,
       slug,
       description: input.description ?? "",
-      phase: "intake",
+      phase: "requirements",
       status: "active",
       repoUrl: isDemoMode() ? null : input.repoUrl ?? null,
       repoPath: isDemoMode() ? null : repoPath,

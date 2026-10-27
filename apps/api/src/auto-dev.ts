@@ -379,7 +379,7 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
     `任务状态：${task.status}。`,
     `测试：${testStatus}；规格核对：${verification?.verdict ?? "未执行"}。`,
     allowPhaseProposal
-      ? "请 QA 做一次简短的验收回馈，Lead 补充下一步；如果失败/阻塞暴露了需要返工或重新规划，用 request_phase 向甲方提议回到 build 或 planning 并说明理由。不要创建其他产物、任务、审批或决策，不要向甲方提问。"
+      ? "请 QA 做一次简短的验收回馈，Lead 补充下一步；如果失败/阻塞暴露了需要返工或重新规划，用 request_phase 提议回到 coding 或 design 并说明理由。不要创建其他产物、任务、审批或决策，不要向甲方提问。"
       : "请 QA 做一次简短的验收回馈，Lead 补充下一步；只基于已有证据，只发消息，不要创建产物、任务、审批或决策，不要向甲方提问。",
     task.blockedReason ? `当前阻塞：${task.blockedReason}` : "",
   ]
@@ -490,7 +490,11 @@ export async function startTaskForProject(
             .select({ id: tasks.id })
             .from(tasks)
             .where(and(eq(tasks.projectId, project.id), inArray(tasks.status, ["proposed", "ready", "in_progress", "review", "testing", "blocked", "failed", "needs_replan", "stale"])));
-          if (!openRows.length && project.repoPath) {
+          if (
+            !openRows.length &&
+            project.repoPath &&
+            (project.phase === "deployment" || project.phase === "operations")
+          ) {
             const preview = await startPreview(project.id, project.repoPath);
             const [room] = await getDb()
               .select()
@@ -743,7 +747,7 @@ export async function autoStartNext(projectId: string): Promise<void> {
     const db = getDb();
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!project) return;
-    if (project.phase !== "build" || !project.autoStartTasks || !project.repoPath) return;
+    if (project.phase !== "coding" || !project.autoStartTasks || !project.repoPath) return;
     if (project.status === "archived") return;
     try {
       await validateRepoPath(project.repoPath);
@@ -778,7 +782,10 @@ export async function autoStartNext(projectId: string): Promise<void> {
         break;
       }
     }
-    if (!candidate) return;
+    if (!candidate) {
+      void nudgePhaseProposal(project.id, "no_ready_tasks");
+      return;
+    }
 
     const startMessageId = uuidv7();
     await insertMessage({
@@ -816,8 +823,21 @@ export function resumeAutoDevelopment(projectId: string): void {
 
 export async function autoStartAll(): Promise<void> {
   const db = getDb();
-  const rows = await db.select().from(projects).where(eq(projects.phase, "build"));
+  const rows = await db.select().from(projects).where(eq(projects.phase, "coding"));
   await Promise.all(rows.map((project) => autoStartNext(project.id)));
+}
+
+async function nudgeAllPhaseGates(): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(inArray(projects.phase, ["design", "coding", "testing", "deployment"]));
+  for (const row of rows) {
+    await nudgePhaseProposal(row.id, "periodic_gate").catch((error) => {
+      console.error("[auto-dev] phase gate nudge failed", error);
+    });
+  }
 }
 
 export function startAutoDevelopmentLoop(): void {
@@ -826,12 +846,19 @@ export function startAutoDevelopmentLoop(): void {
       console.error("[auto-dev] periodic internal review failed", error);
     });
   };
+  const nudgeGates = () => {
+    void nudgeAllPhaseGates().catch((error) => {
+      console.error("[auto-dev] periodic phase nudge failed", error);
+    });
+  };
   setTimeout(() => {
     mergeReviewed();
+    nudgeGates();
     void autoStartAll();
   }, 4_000).unref();
   setInterval(() => {
     mergeReviewed();
+    nudgeGates();
     void autoStartAll();
   }, 20_000).unref();
 }

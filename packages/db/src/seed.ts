@@ -57,7 +57,7 @@ export async function seed(): Promise<void> {
       "Acme Notes（示例项目）",
       "acme-notes",
       "一个轻量的 Markdown 笔记应用：支持笔记的创建、编辑、标签和全文搜索。这是用来体验团队协作流程的示例项目，你可以直接改需求，或新建自己的项目。",
-      "intake",
+      "requirements",
       "active",
       "main",
     ],

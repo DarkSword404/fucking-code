@@ -225,6 +225,13 @@ button {
   font-size: 9.5px;
 }
 
+.workforce-stage {
+  padding: 4px 8px 5px;
+  border-bottom: 1px solid var(--border-soft);
+  color: #9fd8ee;
+  font-size: 9.5px;
+}
+
 .workforce-list {
   max-height: 190px;
   overflow-y: auto;
@@ -463,6 +470,12 @@ button {
 .phase.done {
   color: var(--text-dim);
 }
+.phase.operations.current {
+  color: #22d3ee;
+  border-color: #22d3ee55;
+  background: #22d3ee12;
+}
+
 .phase.current {
   color: var(--accent);
   background: rgba(56, 189, 248, 0.09);

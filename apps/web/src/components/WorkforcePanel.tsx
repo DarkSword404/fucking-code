@@ -1,4 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { PHASE_LABELS } from "@devteam/contracts";
 import { activity, roomReading, snapshot, thinking } from "../lib/store";
 
 function elapsed(start: string | null | undefined, now: number): string {
@@ -17,6 +18,16 @@ export function WorkforcePanel() {
     onCleanup(() => window.clearInterval(timer));
   });
 
+  const phase = () => snapshot()?.project.phase ?? "requirements";
+  const owner = () =>
+    ({
+      requirements: "PM",
+      design: "Architect",
+      coding: "Lead",
+      testing: "QA",
+      deployment: "DevOps",
+      operations: "DevOps",
+    } as Record<string, string>)[phase()] ?? "Lead";
   const roles = () => snapshot()?.roles ?? [];
   const activeRuns = () =>
     (snapshot()?.runs ?? []).filter((run) => run.status === "running");
@@ -73,6 +84,9 @@ export function WorkforcePanel() {
         <div class="workforce-head">
           <span>团队进展</span>
           <span class="workforce-count">{activeCount()} 人在工作</span>
+        </div>
+        <div class="workforce-stage">
+          {PHASE_LABELS[phase()] ?? phase()} · 主责 {owner()}
         </div>
         <div class="workforce-list">
           <For each={roles()}>

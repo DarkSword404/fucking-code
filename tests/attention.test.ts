@@ -20,28 +20,28 @@ describe("attention protocol", () => {
 describe("heuristic attention fallback", () => {
   test("the phase owner speaks even without keywords", () => {
     expect(heuristicAttention("architect", "随便聊聊", "Architect", "design").speak).toBe(true);
-    expect(heuristicAttention("pm", "先说说", "PM", "discovery").speak).toBe(true);
+    expect(heuristicAttention("pm", "先说说", "PM", "requirements").speak).toBe(true);
   });
 
   test("role keywords trigger a response", () => {
-    expect(heuristicAttention("qa", "测试一下权限模型", "QA", "build").speak).toBe(true);
-    expect(heuristicAttention("security", "这里有没有越权风险", "Security", "build").speak).toBe(true);
+    expect(heuristicAttention("qa", "测试一下权限模型", "QA", "coding").speak).toBe(true);
+    expect(heuristicAttention("security", "这里有没有越权风险", "Security", "coding").speak).toBe(true);
   });
 
   test("an unrelated role stays silent", () => {
-    expect(heuristicAttention("frontend", "数据库迁移怎么做", "Frontend", "build").speak).toBe(false);
+    expect(heuristicAttention("frontend", "数据库迁移怎么做", "Frontend", "coding").speak).toBe(false);
   });
 
   test("@ mention forces attention", () => {
-    expect(heuristicAttention("security", "@security 看下这个接口", "Security", "build").speak).toBe(true);
+    expect(heuristicAttention("security", "@security 看下这个接口", "Security", "coding").speak).toBe(true);
   });
 
   test("an explicit request for everyone wakes the room", () => {
-    expect(heuristicAttention("frontend", "大家都说说自己的看法", "Frontend", "build").speak).toBe(true);
+    expect(heuristicAttention("frontend", "大家都说说自己的看法", "Frontend", "coding").speak).toBe(true);
   });
 
   test("an agent that already spoke stays silent unless named", () => {
-    expect(heuristicAttention("pm", "继续讨论需求", "PM", "discovery", 1).speak).toBe(false);
-    expect(heuristicAttention("pm", "@pm 再看一下", "PM", "discovery", 1).speak).toBe(true);
+    expect(heuristicAttention("pm", "继续讨论需求", "PM", "requirements", 1).speak).toBe(false);
+    expect(heuristicAttention("pm", "@pm 再看一下", "PM", "requirements", 1).speak).toBe(true);
   });
 });

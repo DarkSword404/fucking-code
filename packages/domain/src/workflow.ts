@@ -4,6 +4,7 @@ import { WORKFLOW_PHASES } from "@devteam/contracts";
 export const PHASE_ORDER: WorkflowPhase[] = [...WORKFLOW_PHASES];
 
 export function nextPhase(phase: WorkflowPhase): WorkflowPhase | null {
+  if (phase === "operations") return null;
   const i = PHASE_ORDER.indexOf(phase);
   if (i < 0 || i >= PHASE_ORDER.length - 1) return null;
   return PHASE_ORDER[i + 1]!;
@@ -14,29 +15,23 @@ export function phaseIndex(phase: WorkflowPhase): number {
 }
 
 /**
- * Agile phase graph. Forward edges are gated; backward/iteration edges are
- * explicit loops that require a human-confirmed reason.
+ * Six-stage lifecycle graph. It is deliberately a graph: a new requirement can
+ * restart at requirements, a failed test can return to coding, and operations
+ * is a persistent service state rather than a terminal phase.
  */
 export const PHASE_TRANSITIONS: Record<WorkflowPhase, WorkflowPhase[]> = {
-  intake: ["discovery"],
-  discovery: ["discovery", "design", "planning"],
-  design: ["design", "discovery", "planning"],
-  planning: ["planning", "design", "build"],
-  build: ["build", "planning", "test"],
-  test: ["test", "build", "review"],
-  review: ["review", "test", "build", "deliver"],
-  deliver: ["deliver", "planning", "done"],
-  done: ["discovery", "planning"],
+  requirements: ["design"],
+  design: ["requirements", "design", "coding"],
+  coding: ["requirements", "design", "coding", "testing"],
+  testing: ["requirements", "design", "coding", "testing", "deployment"],
+  deployment: ["requirements", "design", "coding", "testing", "deployment", "operations"],
+  operations: ["requirements", "design", "coding", "testing", "deployment"],
 };
 
 export function canTransitionPhase(from: WorkflowPhase, to: WorkflowPhase): boolean {
   return from !== to && (PHASE_TRANSITIONS[from]?.includes(to) ?? false);
 }
 
-/**
- * Transition rules are data, not prompt text. The API refuses illegal moves;
- * a human owner may force a move only with a recorded reason (audited).
- */
 export function assertTransition(from: WorkflowPhase, to: WorkflowPhase): void {
   if (!canTransitionPhase(from, to)) {
     throw new Error(
@@ -46,15 +41,12 @@ export function assertTransition(from: WorkflowPhase, to: WorkflowPhase): void {
 }
 
 export const PHASE_DESCRIPTIONS: Record<WorkflowPhase, string> = {
-  intake: "用户刚提出目标，团队还没开始澄清。",
-  discovery: "PM 正在澄清需求、边界和验收标准。",
-  design: "架构师正在给出技术方案、接口契约和风险。",
-  planning: "Lead 正在把方案拆成有依赖关系的任务。",
-  build: "开发 Agent 正在实现任务并提交可审查的变更。",
-  test: "QA 正在设计并执行验证，缺陷进入修复闭环。",
-  review: "等待人类评审代码、测试证据和交付范围。",
-  deliver: "准备 PR / 交付物，等待最终审批。",
-  done: "本阶段研发已交付完成。",
+  requirements: "PM 正在澄清目标、边界、验收标准与安全要求。",
+  design: "Architect 正在给出方案、接口契约、任务拆解与安全设计。",
+  coding: "开发正在实现；Security 按检查点做 SCA、SAST 和代码审计。",
+  testing: "QA 做测试与规格核对；Security 做安全测试和渗透验证。",
+  deployment: "DevOps 准备预览、发布、健康检查与回滚。",
+  operations: "服务持续运行；DevOps 处理监控、故障、补丁和下一轮迭代。",
 };
 
 export type PhaseGateContext = {
@@ -73,73 +65,69 @@ export interface GateRequirement {
 export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): GateRequirement[] {
   const hasAccepted = (kind: string) =>
     ctx.artifacts.some((a) => a.kind === kind && a.status === "accepted");
-  const hasArtifact = (kind: string) => ctx.artifacts.some((a) => a.kind === kind);
   const openTasks = ctx.tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
 
   switch (phase) {
-    case "discovery":
+    case "requirements":
       return [
-        {
-          key: "prd_accepted",
-          label: "PRD 已生成并被人确认",
-          met: hasAccepted("prd"),
-        },
+        { key: "prd_accepted", label: "PRD 已生成并内部接受", met: hasAccepted("prd") },
         {
           key: "acceptance_criteria",
-          label: "验收标准已生成并被人确认",
+          label: "验收标准已生成并内部接受",
           met: hasAccepted("acceptance_criteria"),
+        },
+        {
+          key: "security_requirements",
+          label: "安全/合规要求已记录",
+          met: hasAccepted("security_requirements"),
         },
       ];
     case "design":
       return [
-        { key: "design_accepted", label: "技术方案已生成并被人确认", met: hasAccepted("design") },
-      ];
-    case "planning":
-      return [
-        {
-          key: "current_prd",
-          label: "当前 PRD 版本已确认",
-          met: hasAccepted("prd"),
-        },
-        {
-          key: "current_acceptance",
-          label: "当前验收标准版本已确认",
-          met: hasAccepted("acceptance_criteria"),
-        },
+        { key: "design_accepted", label: "技术方案已生成并内部接受", met: hasAccepted("design") },
+        { key: "plan_accepted", label: "实施计划已生成并内部接受", met: hasAccepted("plan") },
         { key: "has_tasks", label: "至少拆出 1 个可执行任务", met: ctx.tasks.length > 0 },
+        {
+          key: "security_design",
+          label: "威胁模型 / 安全设计已完成",
+          met: hasAccepted("security_design"),
+        },
       ];
-    case "build":
+    case "coding":
       return [
         {
           key: "tasks_closed",
-          label: "所有开发任务已完成或取消",
+          label: "所有编码任务已完成或取消",
           met: ctx.tasks.length > 0 && openTasks.length === 0,
         },
+        { key: "sca", label: "SCA 依赖扫描已完成", met: hasAccepted("sca_report") },
+        { key: "sast", label: "SAST 静态扫描已完成", met: hasAccepted("sast_report") },
+        { key: "code_audit", label: "代码安全审计已完成", met: hasAccepted("code_audit") },
       ];
-    case "test":
+    case "testing":
       return [
+        { key: "test_report", label: "测试报告已接受", met: hasAccepted("test_report") },
         {
-          key: "test_report",
-          label: "测试报告已生成并确认",
-          met: hasAccepted("test_report"),
+          key: "spec_review",
+          label: "规格核对已通过",
+          met: hasAccepted("spec_review"),
+        },
+        {
+          key: "security_test",
+          label: "安全测试 / 渗透验证已完成",
+          met: hasAccepted("security_test"),
         },
       ];
-    case "review":
+    case "deployment":
       return [
         {
-          key: "review_approval",
-          label: "代码评审已获人工批准",
-          met: ctx.approvals.some((a) => a.targetType === "phase_review" && a.status === "approved"),
+          key: "release_security",
+          label: "发布安全 / SBOM 检查已通过",
+          met: hasAccepted("release_security"),
         },
       ];
-    case "deliver":
-      return [
-        {
-          key: "delivery_approval",
-          label: "交付 / 创建 PR 已获人工批准",
-          met: ctx.approvals.some((a) => a.targetType === "delivery" && a.status === "approved"),
-        },
-      ];
+    case "operations":
+      return [];
     default:
       return [];
   }
@@ -153,9 +141,8 @@ export function gateRequirementsForTransition(
   if (!canTransitionPhase(from, to)) {
     return [{ key: "legal_transition", label: "阶段转移合法", met: false }];
   }
-  // Forward moves must satisfy the current phase gate. Backward moves and
-  // iteration loops (e.g. test -> build, done -> planning) are allowed when
-  // the client confirms, because they represent rework or a new sprint.
+  // Forward moves satisfy the current stage gate. Backward loops and new
+  // iterations are allowed because they represent rework or a new request.
   if (phaseIndex(to) <= phaseIndex(from)) return [];
   return gateRequirements(from, ctx);
 }
@@ -164,3 +151,61 @@ export function canAdvance(phase: WorkflowPhase, ctx: PhaseGateContext): boolean
   if (!nextPhase(phase)) return false;
   return gateRequirements(phase, ctx).every((r) => r.met);
 }
+
+/**
+ * Who owns and who may join each stage. The Lead remains the process
+ * controller; the stage owner owns content quality.
+ */
+export const STAGE_POLICIES: Record<
+  WorkflowPhase,
+  {
+    owner: string;
+    participants: string[];
+    consult: string[];
+    silent: string[];
+    security: "consult" | "active" | "scheduled" | "release";
+  }
+> = {
+  requirements: {
+    owner: "pm",
+    participants: ["pm", "lead"],
+    consult: ["architect", "qa", "security"],
+    silent: ["frontend", "backend", "devops"],
+    security: "consult",
+  },
+  design: {
+    owner: "architect",
+    participants: ["architect", "pm", "lead", "frontend", "backend", "security"],
+    consult: ["qa", "devops"],
+    silent: [],
+    security: "active",
+  },
+  coding: {
+    owner: "lead",
+    participants: ["lead", "frontend", "backend", "devops"],
+    consult: [],
+    silent: ["pm", "architect", "qa", "security"],
+    security: "scheduled",
+  },
+  testing: {
+    owner: "qa",
+    participants: ["qa", "frontend", "backend", "lead", "architect", "security"],
+    consult: ["devops"],
+    silent: ["pm"],
+    security: "active",
+  },
+  deployment: {
+    owner: "devops",
+    participants: ["devops", "backend", "qa", "security", "lead"],
+    consult: ["pm"],
+    silent: ["frontend", "architect"],
+    security: "release",
+  },
+  operations: {
+    owner: "devops",
+    participants: ["devops", "backend", "security", "qa", "lead"],
+    consult: ["pm"],
+    silent: ["frontend", "architect"],
+    security: "active",
+  },
+};

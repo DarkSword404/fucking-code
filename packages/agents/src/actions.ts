@@ -81,6 +81,12 @@ export async function applyActions(
   };
 
   async function proposePhase(target: WorkflowPhase, reason: string, source: string) {
+    // Phase control belongs to the Lead (stage owners own content, not the
+    // lifecycle switch). Other roles must raise a finding/task or ask Lead.
+    if (ctx.actorRole.key !== "lead") {
+      result.notes.push(`${source} ignored: only Lead controls stage transitions`);
+      return;
+    }
     const from = ctx.bundle.project.phase as WorkflowPhase;
     if (!canTransitionPhase(from, target)) {
       result.notes.push(
@@ -140,22 +146,6 @@ export async function applyActions(
       targetType: `phase_transition:${target}`,
       internal: true,
     });
-    if (target === "review" || target === "deliver") {
-      const gateType = target === "review" ? "phase_review" : "delivery";
-      const gateTitle = target === "review" ? "代码评审" : "交付审批";
-      await db.insert(approvals).values({
-        id: uuidv7(),
-        projectId: ctx.bundle.project.id,
-        targetType: gateType,
-        targetVersion: nextVersion,
-        title: gateTitle,
-        status: "approved",
-        requestedBy: "system",
-        decidedBy: "Fucking Code 内部评审",
-        decidedAt: new Date(),
-        reason: "工程门禁由 QA / Lead 内部评审通过",
-      });
-    }
     result.notes.push(`phase changed internally: ${from} -> ${target}`);
   }
 
@@ -164,9 +154,9 @@ export async function applyActions(
       switch (action.type) {
         case "create_task": {
           const phase = ctx.bundle.project.phase;
-          if (["intake", "discovery", "design"].includes(phase)) {
+          if (phase === "requirements") {
             result.notes.push(
-              `create_task ignored: tasks are only allowed from planning onward (current: ${phase})`,
+              `create_task ignored: task planning belongs to design/coding, not requirements (current: ${phase})`,
             );
             break;
           }

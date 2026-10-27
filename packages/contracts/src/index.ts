@@ -4,28 +4,22 @@
  */
 
 export const WORKFLOW_PHASES = [
-  "intake",
-  "discovery",
+  "requirements",
   "design",
-  "planning",
-  "build",
-  "test",
-  "review",
-  "deliver",
-  "done",
+  "coding",
+  "testing",
+  "deployment",
+  "operations",
 ] as const;
 export type WorkflowPhase = (typeof WORKFLOW_PHASES)[number];
 
 export const PHASE_LABELS: Record<WorkflowPhase, string> = {
-  intake: "需求受理",
-  discovery: "需求澄清",
-  design: "方案设计",
-  planning: "任务拆解",
-  build: "开发实现",
-  test: "测试验证",
-  review: "评审验收",
-  deliver: "交付",
-  done: "已完成",
+  requirements: "需求分析",
+  design: "设计方案",
+  coding: "编码",
+  testing: "测试",
+  deployment: "部署",
+  operations: "运维中",
 };
 
 export const TASK_STATUSES = [
@@ -82,6 +76,13 @@ export const ARTIFACT_KINDS = [
   "plan",
   "test_report",
   "spec_review",
+  "security_requirements",
+  "security_design",
+  "sca_report",
+  "sast_report",
+  "code_audit",
+  "security_test",
+  "release_security",
   "diff",
   "repo_analysis",
   "note",
@@ -96,6 +97,13 @@ export const ARTIFACT_LABELS: Record<ArtifactKind, string> = {
   plan: "实施计划",
   test_report: "测试报告",
   spec_review: "规格核对",
+  security_requirements: "安全需求",
+  security_design: "安全设计 / 威胁模型",
+  sca_report: "SCA 依赖扫描",
+  sast_report: "SAST 静态扫描",
+  code_audit: "代码安全审计",
+  security_test: "安全测试 / 渗透",
+  release_security: "发布安全检查",
   diff: "代码变更",
   repo_analysis: "仓库理解",
   note: "备注",

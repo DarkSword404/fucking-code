@@ -77,7 +77,7 @@ export const projects = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     description: text("description").notNull().default(""),
-    phase: text("phase").notNull().default("intake"),
+    phase: text("phase").notNull().default("requirements"),
     status: text("status").notNull().default("active"),
     repoUrl: text("repo_url"),
     repoPath: text("repo_path"),

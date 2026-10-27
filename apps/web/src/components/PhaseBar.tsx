@@ -10,7 +10,7 @@ export function PhaseBar(props: { current: WorkflowPhase }) {
           <div
             class={`phase ${phase === props.current ? "current" : ""} ${
               index() < currentIndex() ? "done" : ""
-            }`}
+            } ${phase === "operations" ? "operations" : ""}`}
             title={PHASE_LABELS[phase]}
           >
             <span class="phase-dot" />

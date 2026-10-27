@@ -199,12 +199,18 @@ function Workspace() {
               ⚙
             </button>
           </Show>
-          <Show when={!isAdminView() && snap()?.project.repoPath}>
+          <Show
+            when={
+              !isAdminView() &&
+              snap()?.project.repoPath &&
+              ["deployment", "operations"].includes(snap()!.project.phase)
+            }
+          >
             <button
               class="btn"
               disabled={previewLoading()}
               onClick={() => void openPreview()}
-              title="启动项目预览并在新标签页打开"
+              title="只有部署/运维阶段可以启动项目预览"
             >
               {previewLoading() ? "启动预览…" : "预览"}
             </button>
@@ -230,7 +236,14 @@ function Workspace() {
               继续自动开发
             </button>
           </Show>
-          <Show when={!isAdminView() && !pending() && canEditCurrentProject()}>
+          <Show
+            when={
+              !isAdminView() &&
+              !pending() &&
+              canEditCurrentProject() &&
+              snap()?.project.phase !== "operations"
+            }
+          >
             <button
               class="btn"
               onClick={requestAdvance}

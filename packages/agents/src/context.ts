@@ -1,6 +1,6 @@
 import type { WorkflowPhase } from "@devteam/contracts";
 import type { RoomBundle } from "@devteam/db";
-import { ACTION_PROTOCOL, PHASE_DESCRIPTIONS, PHASE_TRANSITIONS, phaseIndex } from "@devteam/domain";
+import { ACTION_PROTOCOL, PHASE_DESCRIPTIONS, PHASE_TRANSITIONS, STAGE_POLICIES, phaseIndex } from "@devteam/domain";
 
 const ALIASES: Record<string, string> = {
   pm: "pm",
@@ -57,7 +57,8 @@ export function buildSystemPrompt(bundle: RoomBundle, roleKey: string): string {
     `当前项目阶段：${phase}（${PHASE_DESCRIPTIONS[phase]}）`,
     `阶段序号：${phaseIndex(phase) + 1}/9`,
     `当前阶段可提议的转移：${PHASE_TRANSITIONS[phase].filter((p) => p !== phase).join("、")}`,
-    "阶段由你根据证据主动判断，但进入、回退或开始新一轮都必须用 request_phase 让甲方确认。",
+    `本阶段主责：${STAGE_POLICIES[phase].owner}；正常参与：${STAGE_POLICIES[phase].participants.join("、") || "无"}；咨询：${STAGE_POLICIES[phase].consult.join("、") || "无"}；默认静默：${STAGE_POLICIES[phase].silent.join("、") || "无"}。`,
+    "阶段由 AI 判断、服务端校验门禁后内部推进；只有真正的产品决策需要甲方确认。",
     "你是团队里的一个具体员工，不是通用助手。不要越权替别的岗位做决定。",
     "用户是甲方/客户，你和团队是乙方。尊重甲方，但不要无条件服从：需求不清先问，方案有风险或更优解时直接说明并给出替代方案。",
   ].join("\n");

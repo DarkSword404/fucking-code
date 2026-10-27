@@ -48,12 +48,12 @@ describe("agent action protocol", () => {
 
   test("parses a client-confirmed phase proposal", () => {
     const parsed = parseAgentOutput(
-      '```devteam\n{"actions":[{"type":"request_phase","phase":"build","reason":"设计已确认，任务已拆好"}]}\n```',
+      '```devteam\n{"actions":[{"type":"request_phase","phase":"coding","reason":"设计已确认，任务已拆好"}]}\n```',
     );
     expect(parsed.errors).toEqual([]);
     expect(parsed.actions[0]).toMatchObject({
       type: "request_phase",
-      phase: "build",
+      phase: "coding",
       reason: "设计已确认，任务已拆好",
     });
   });
@@ -84,12 +84,13 @@ describe("task state machine", () => {
 describe("workflow gates", () => {
   const empty = { artifacts: [], tasks: [], approvals: [] };
 
-  test("discovery needs an accepted PRD and acceptance criteria", () => {
-    expect(gateRequirements("discovery", empty).every((r) => !r.met)).toBe(true);
-    const met = gateRequirements("discovery", {
+  test("requirements needs PRD, acceptance and security requirements", () => {
+    expect(gateRequirements("requirements", empty).every((r) => !r.met)).toBe(true);
+    const met = gateRequirements("requirements", {
       artifacts: [
         { kind: "prd", status: "accepted", title: "PRD" },
         { kind: "acceptance_criteria", status: "accepted", title: "AC" },
+        { kind: "security_requirements", status: "accepted", title: "SEC" },
       ],
       tasks: [],
       approvals: [],
@@ -97,21 +98,19 @@ describe("workflow gates", () => {
     expect(met.every((r) => r.met)).toBe(true);
   });
 
-  test("planning requires the current accepted spec and at least one task", () => {
-    const missing = gateRequirements("planning", {
-      artifacts: [],
-      tasks: [{ status: "ready" }],
-      approvals: [],
-    });
+  test("design needs design, plan, tasks and security design", () => {
+    const missing = gateRequirements("design", empty);
     expect(missing.filter((r) => !r.met).map((r) => r.key)).toEqual([
-      "current_prd",
-      "current_acceptance",
+      "design_accepted",
+      "plan_accepted",
+      "has_tasks",
+      "security_design",
     ]);
-
-    const ok = gateRequirements("planning", {
+    const ok = gateRequirements("design", {
       artifacts: [
-        { kind: "prd", status: "accepted", title: "PRD" },
-        { kind: "acceptance_criteria", status: "accepted", title: "AC" },
+        { kind: "design", status: "accepted", title: "Design" },
+        { kind: "plan", status: "accepted", title: "Plan" },
+        { kind: "security_design", status: "accepted", title: "Threat model" },
       ],
       tasks: [{ status: "ready" }],
       approvals: [],
@@ -119,43 +118,50 @@ describe("workflow gates", () => {
     expect(ok.every((r) => r.met)).toBe(true);
   });
 
-  test("build waits for every task to close", () => {
-    const open = gateRequirements("build", {
+  test("coding waits for tasks and security evidence", () => {
+    const open = gateRequirements("coding", {
       artifacts: [],
       tasks: [{ status: "done" }, { status: "in_progress" }],
       approvals: [],
     });
     expect(open[0]?.met).toBe(false);
-    const closed = gateRequirements("build", {
-      artifacts: [],
+    const closed = gateRequirements("coding", {
+      artifacts: [
+        { kind: "sca_report", status: "accepted", title: "SCA" },
+        { kind: "sast_report", status: "accepted", title: "SAST" },
+        { kind: "code_audit", status: "accepted", title: "Audit" },
+      ],
       tasks: [{ status: "done" }, { status: "cancelled" }],
       approvals: [],
     });
-    expect(closed[0]?.met).toBe(true);
+    expect(closed.every((r) => r.met)).toBe(true);
   });
 
-  test("phases advance one step at a time", () => {
-    expect(nextPhase("intake")).toBe("discovery");
-    expect(nextPhase("deliver")).toBe("done");
-    expect(nextPhase("done")).toBeNull();
+  test("six-stage forward chain and persistent operations", () => {
+    expect(nextPhase("requirements")).toBe("design");
+    expect(nextPhase("design")).toBe("coding");
+    expect(nextPhase("coding")).toBe("testing");
+    expect(nextPhase("testing")).toBe("deployment");
+    expect(nextPhase("deployment")).toBe("operations");
+    expect(nextPhase("operations")).toBeNull();
   });
 
-  test("supports agile loops without allowing arbitrary skips", () => {
-    expect(canTransitionPhase("build", "test")).toBe(true);
-    expect(canTransitionPhase("test", "build")).toBe(true);
-    expect(canTransitionPhase("review", "build")).toBe(true);
-    expect(canTransitionPhase("deliver", "planning")).toBe(true);
-    expect(canTransitionPhase("done", "planning")).toBe(true);
-    expect(canTransitionPhase("done", "discovery")).toBe(true);
-    expect(canTransitionPhase("intake", "design")).toBe(false);
-    expect(canTransitionPhase("build", "review")).toBe(false);
-    expect(canTransitionPhase("build", "build")).toBe(false);
+  test("supports rework and new-iteration loops", () => {
+    expect(canTransitionPhase("design", "coding")).toBe(true);
+    expect(canTransitionPhase("testing", "coding")).toBe(true);
+    expect(canTransitionPhase("testing", "design")).toBe(true);
+    expect(canTransitionPhase("deployment", "testing")).toBe(true);
+    expect(canTransitionPhase("operations", "requirements")).toBe(true);
+    expect(canTransitionPhase("operations", "deployment")).toBe(true);
+    expect(canTransitionPhase("requirements", "deployment")).toBe(false);
+    expect(canTransitionPhase("coding", "coding")).toBe(false);
   });
 
   test("forward transitions keep the gate, rework loops do not", () => {
-    const missing = gateRequirementsForTransition("discovery", "design", empty);
+    const missing = gateRequirementsForTransition("requirements", "design", empty);
     expect(missing.some((r) => !r.met)).toBe(true);
-    expect(gateRequirementsForTransition("test", "build", empty)).toEqual([]);
-    expect(gateRequirementsForTransition("review", "build", empty)).toEqual([]);
+    expect(gateRequirementsForTransition("testing", "coding", empty)).toEqual([]);
+    expect(gateRequirementsForTransition("deployment", "coding", empty)).toEqual([]);
+    expect(gateRequirementsForTransition("operations", "requirements", empty)).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import {
   canEditCurrentProject,
   messages,
   openArtifact,
+  openPreview,
   openRight,
   roomReading,
   sendMessage,
@@ -142,7 +143,7 @@ export function ChatView() {
     if (!snap) return [];
     const phase = snap.project.phase;
     const prd = snap.artifacts.find((a) => a.kind === "prd");
-    if (phase === "discovery" && !prd) {
+    if (phase === "requirements" && !prd) {
       return [
         {
           label: "让 PM 先问清楚需求",
@@ -153,30 +154,29 @@ export function ChatView() {
         },
       ];
     }
-    if (phase === "discovery" && prd && prd.status === "in_review") {
+    if (phase === "requirements" && prd && prd.status === "in_review") {
       return [{ label: "审查 PRD", run: () => void openArtifact(prd.id) }];
     }
     if (phase === "design") {
       return [
         {
           label: "让 Architect 出方案",
-          run: () => void sendMessage("@Architect 基于已确认的 PRD 给出技术方案和接口契约。"),
+          run: () => void sendMessage("@Architect 基于已确认的 PRD 给出技术方案、接口契约和威胁模型。"),
         },
-      ];
-    }
-    if (phase === "planning") {
-      return [
         {
           label: "让 Lead 拆任务",
-          run: () => void sendMessage("@Lead 把方案拆成可执行任务，前后端并行，QA 在接口稳定后介入。"),
+          run: () => void sendMessage("@Lead 把方案拆成可执行任务，前后端并行，并安排 Security 做安全设计。"),
         },
       ];
     }
-    if (phase === "build") {
-      return [{ label: "让 QA 准备测试", run: () => void sendMessage("@QA 先给出测试策略和关键用例。") }];
+    if (phase === "coding") {
+      return [{ label: "让 QA 准备测试计划", run: () => void sendMessage("@QA 先给出测试策略和关键用例，不要在编码阶段做最终验收。") }];
     }
-    if (phase === "test") {
-      return [{ label: "生成测试报告", run: () => void sendMessage("@QA 汇总测试结果，生成测试报告。") }];
+    if (phase === "testing") {
+      return [{ label: "生成测试与安全报告", run: () => void sendMessage("@QA 汇总测试结果，生成测试报告；@Security 完成安全测试并给出结论。") }];
+    }
+    if (phase === "deployment") {
+      return [{ label: "启动项目预览", run: () => void openPreview() }];
     }
     return [];
   };

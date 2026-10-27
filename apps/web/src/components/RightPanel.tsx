@@ -120,7 +120,7 @@ export function RightPanel() {
 
           <Show when={snap()?.nextPhase}>
             <div class="gate-note">
-              下一阶段：{PHASE_LABELS[snap()!.nextPhase!]}。正常由 AI 在门禁满足后发起阶段提议、你确认；手动推进只作为负责人兜底。敏捷循环（测试失败回 build、交付后开新一轮）也走同一确认流程。
+              当前阶段主责：Lead 控制流程，阶段 Owner 负责内容，Security 负责安全门禁。阶段由 AI 判断、服务端校验后内部推进；手动推进只作为负责人兜底。测试失败可回 coding，新需求可回 requirements。
             </div>
           </Show>
 

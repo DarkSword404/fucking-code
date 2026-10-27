@@ -151,23 +151,22 @@ Backend / Frontend 在隔离 worktree 实现
 ### 研发阶段
 
 ```text
-主链：intake → discovery → design → planning → build → test → review → deliver → done
-循环：test → build；review → build；build → planning；deliver / done → planning / discovery
+主链：requirements → design → coding → testing → deployment → operations
+循环：testing → coding / design；deployment → testing / coding；operations → requirements / design / coding
 ```
 
-阶段不是单向流水线。AI 根据产物、任务和测试证据判断下一步：进入下一阶段、回退返工，
-还是交付后开始新一轮。AI 会用 `request_phase` 向甲方发起确认，甲方在弹窗中批准后才推进；
-自动开发不会因为一次阶段批准就自己继续跑。
+阶段不是单向流水线。Lead 根据阶段 Owner 的证据判断下一步：进入下一阶段、回退返工，
+还是交付后开始新一轮；服务端校验门禁后内部推进。Security 在设计、编码和测试阶段分别做安全设计、
+SCA/SAST/代码审计和安全测试/渗透；运维是持续态，新需求可从 operations 回到 requirements。
 
 每个阶段都有门禁：
 
-- discovery：PRD 已接受 + 验收标准存在；
-- design：技术方案已接受；
-- planning：至少一个可执行任务；
-- build：任务完成/取消；
-- test：测试报告已接受；
-- review：代码评审由 QA/Lead 内部通过；
-- deliver：交付由团队内部评审通过。
+- requirements：PRD、验收标准、安全要求已接受；
+- design：技术方案、计划、任务拆解、威胁模型已接受；
+- coding：所有编码任务完成，SCA/SAST/代码审计完成；
+- testing：测试报告、规格核对、安全测试/渗透完成；
+- deployment：预览、发布检查和健康检查通过；
+- operations：持续运维态，没有“完成”终点，可随时开始下一轮需求。
 
 ---
 
@@ -192,7 +191,7 @@ Backend / Frontend 在隔离 worktree 实现
 
 - 左下角实时团队进展：成员、当前动作、任务和耗时；
 - 任务看板、优先级、负责人、验收标准、依赖；
-- 进入 build 后自动启动就绪任务（可在项目设置中关闭）；
+- 进入 coding 后自动启动就绪任务（可在项目设置中关闭）；
 - 每个任务完成后自动触发 QA/Lead 群聊回馈；
 - 任务编辑/删除/取消/重试；
 - 隔离 Git worktree；
@@ -200,7 +199,7 @@ Backend / Frontend 在隔离 worktree 实现
 - 自动跑测试；
 - QA 按任务验收标准做规格核对；
 - 通过 QA 规格核对后，由团队内部评审自动合并到默认分支；
-- 开发完成后可从顶部启动项目预览；预览通过隔离端口和 `/preview/<token>/` 挂载；
+- testing 和 Security 通过、进入 deployment 后，可从顶部启动项目预览；预览通过隔离端口和 `/preview/<token>/` 挂载；
 - 配置 `GITHUB_TOKEN` 后推送并创建 GitHub PR。
 
 ### 协作与安全
@@ -210,7 +209,8 @@ Backend / Frontend 在隔离 worktree 实现
 - 在线成员 presence；
 - 任务/项目乐观锁，避免覆盖；
 - 自助修改密码；
-- 项目、任务、产物、审批、阶段变更审计；
+- 项目、任务、产物、阶段变更和安全证据审计；
+- Security 门禁：安全设计、SCA、SAST、代码审计、安全测试、发布安全检查；
 - 测试和终端命令通过 bubblewrap 沙箱执行；
 - PGlite 备份/恢复脚本。
 

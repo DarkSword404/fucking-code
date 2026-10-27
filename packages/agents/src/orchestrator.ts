@@ -6,7 +6,7 @@ import {
   type WorkflowPhase,
 } from "@devteam/contracts";
 import { agentRuns, captureAcceptedSpec, getDb, insertMessage, latestArtifactContent, loadRoomBundle, messages, projects, type RoleRow, type RoomBundle } from "@devteam/db";
-import { uuidv7, type ValidatedAgentAction } from "@devteam/domain";
+import { STAGE_POLICIES, uuidv7, type ValidatedAgentAction } from "@devteam/domain";
 import { applyActions, type EmitFn } from "./actions.js";
 import {
   buildAttentionPrompt,
@@ -359,20 +359,6 @@ export class Orchestrator {
     if (!loaded) throw new Error("room bundle not found");
     let bundle: RoomBundle = loaded;
 
-    // Intake is a holding state: the first human message moves the project
-    // into discovery. No gate is skipped because intake has none.
-    if (bundle.project.phase === "intake") {
-      await db
-        .update(projects)
-        .set({ phase: "discovery", updatedAt: new Date(), version: bundle.project.version + 1 })
-        .where(eq(projects.id, params.projectId));
-      bundle.project.phase = "discovery";
-      await this.emit(EVENT_TYPES.phaseChanged, {
-        from: "intake",
-        to: "discovery",
-        by: "system",
-      });
-    }
 
     const enabledRoles = bundle.roles
       .filter((r) => r.enabled)
@@ -477,9 +463,16 @@ export class Orchestrator {
           for (const key of mentioned) forcedThisRound.set(key, "被点名");
         }
 
+        const stagePolicy = STAGE_POLICIES[bundle.project.phase as WorkflowPhase];
+        const stageAllowed = new Set([
+          stagePolicy.owner,
+          ...stagePolicy.participants,
+          ...stagePolicy.consult,
+        ]);
         const participants = enabledRoles.filter(
           (role) =>
             activeKeys.has(role.key) &&
+            (stageAllowed.has(role.key) || forcedThisRound.has(role.key)) &&
             (spoken.get(role.key) ?? 0) < this.maxMessagesPerAgent,
         );
         if (!participants.length) break;
@@ -571,15 +564,12 @@ export class Orchestrator {
         const remainingMessages = Math.max(0, this.maxMessagesPerTurn - totalMessages);
         const phaseOwner =
           ({
-            intake: "pm",
-            discovery: "pm",
+            requirements: "pm",
             design: "architect",
-            planning: "lead",
-            build: "lead",
-            test: "qa",
-            review: "lead",
-            deliver: "lead",
-            done: "lead",
+            coding: "lead",
+            testing: "qa",
+            deployment: "devops",
+            operations: "devops",
           } as Record<string, string>)[bundle.project.phase] ?? "lead";
         const speakers = decisions
           .filter((d) => d.speak)
@@ -869,7 +859,7 @@ export class Orchestrator {
       // focused extraction turn instead of asking the human to create tasks.
       if (
         !params.signal?.aborted &&
-        bundle.project.phase === "planning" &&
+        bundle.project.phase === "design" &&
         bundle.artifacts.some((artifact) => artifact.kind === "plan") &&
         bundle.tasks.length <= tasksBefore
       ) {

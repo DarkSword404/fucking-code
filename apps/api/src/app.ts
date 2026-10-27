@@ -2024,6 +2024,13 @@ const BATCH_ACCEPT_KINDS = new Set([
   "diff",
   "test_report",
   "spec_review",
+  "security_requirements",
+  "security_design",
+  "sca_report",
+  "sast_report",
+  "code_audit",
+  "security_test",
+  "release_security",
 ]);
 
 app.post("/api/v1/projects/:projectId/artifacts/accept-pending", async (c) => {
@@ -2130,47 +2137,6 @@ app.get("/api/v1/projects/:projectId/approvals", async (c) => {
   return c.json({ items: rows });
 });
 
-async function ensurePhaseApproval(project: ProjectRow, to: WorkflowPhase, version: number) {
-  // Entering a human-gated phase creates the approval object, so the gate is
-  // actionable instead of an empty checklist item.
-  if (to !== "review" && to !== "deliver") return;
-  const db = getDb();
-  const targetType = to === "review" ? "phase_review" : "delivery";
-  const title = to === "review" ? "代码评审" : "交付审批";
-  const [existing] = await db
-    .select({ id: approvals.id })
-    .from(approvals)
-    .where(
-      and(
-        eq(approvals.projectId, project.id),
-        eq(approvals.targetType, targetType),
-        eq(approvals.status, "pending"),
-      ),
-    )
-    .limit(1);
-  if (existing) return;
-  const approvalId = uuidv7();
-  await db.insert(approvals).values({
-    id: approvalId,
-    projectId: project.id,
-    targetType,
-    targetVersion: version,
-    title,
-    status: "approved",
-    requestedBy: "system",
-    decidedBy: "Fucking Code 内部评审",
-    decidedAt: new Date(),
-    reason: `进入${PHASE_LABELS[to]}阶段已由内部评审通过。`,
-  });
-  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.approvalChanged, {
-    approvalId,
-    action: "approved",
-    title,
-    targetType,
-    internal: true,
-  });
-}
-
 const approvalDecisionSchema = z.object({
   status: z.enum(APPROVAL_STATUSES as unknown as [string, ...string[]]),
   reason: z.string().max(2000).optional(),
@@ -2256,7 +2222,6 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
       agileLoop: phaseIndex(phaseTarget) <= phaseIndex(from),
       approvalId: approval.id,
     });
-    await ensurePhaseApproval(project, phaseTarget, updatedProject.version);
     await audit({
       tenantId: project.tenantId,
       projectId: project.id,
@@ -2287,8 +2252,7 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
   });
   await pauseAutoDevelopment(project.id, "approval");
   // A phase-transition approval already consumed the transition; do not chain
-  // straight into another phase proposal. Review/delivery approvals are
-  // different: they unlock the next forward step for the Lead to ask about.
+  // straight into another phase proposal.
   if (body.status === "approved" && !phaseTarget) {
     void nudgePhaseProposal(project.id, "approval_approved");
   }
@@ -2444,9 +2408,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     by: user.displayName,
     forced: Boolean(body.force),
   });
-  if (to === "build") void autoStartNext(project.id);
-
-  await ensurePhaseApproval(project, to, updated.version);
+  if (to === "coding") void autoStartNext(project.id);
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,
