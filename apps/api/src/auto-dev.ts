@@ -535,7 +535,15 @@ export async function startTaskForProject(
       const failed = fresh ? ["failed", "blocked"].includes(fresh.status) : false;
       if (failed) {
         pausedProjects.add(project.id);
-        if (options.auto) {
+        const [currentProject] = await getDb()
+          .select({ autoStartTasks: projects.autoStartTasks })
+          .from(projects)
+          .where(eq(projects.id, project.id))
+          .limit(1);
+        // A task may have been started manually while auto development was on,
+        // or auto may have been enabled during the run. Pause must follow the
+        // current project switch, not the stale options.auto value.
+        if (currentProject?.autoStartTasks) {
           await getDb()
             .update(projects)
             .set({ autoStartTasks: false, updatedAt: new Date() })
@@ -688,6 +696,10 @@ async function autoMergeReviewedTask(input: {
       commit: merged.commit,
       internal: true,
     });
+    // A manual verify/retry can recover a previously failed task. Clear the
+    // in-memory pause only after a successful internal merge; failures still
+    // pause until the user explicitly resolves them.
+    pausedProjects.delete(project.id);
     return true;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
