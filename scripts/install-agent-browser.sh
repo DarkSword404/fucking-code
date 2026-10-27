@@ -26,6 +26,13 @@ command -v node >/dev/null 2>&1 || fail "Node.js is required."
 command -v npx >/dev/null 2>&1 || fail "npx is required."
 command -v opencode >/dev/null 2>&1 || fail "The OpenCode CLI is required (opencode)."
 
+if [ -z "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ] && command -v curl >/dev/null 2>&1; then
+  if ! curl -sI --max-time 6 https://cdn.playwright.dev/ >/dev/null 2>&1; then
+    export PLAYWRIGHT_DOWNLOAD_HOST="https://cdn.npmmirror.com/binaries/playwright"
+    say "Playwright CDN is unreachable; using the npmmirror browser mirror."
+  fi
+fi
+
 say "Installing Chromium for Playwright ${PLAYWRIGHT_VERSION}…"
 # Browser-only first: this does not need root. If the host is missing shared
 # libraries, run the printed install-deps command once with sudo.
