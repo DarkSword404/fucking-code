@@ -304,6 +304,9 @@ export async function recoverOrphanedTasks(): Promise<void> {
       ).catch(() => undefined);
     }
   }
+  // Also finish review tasks that were waiting for a human merge before this
+  // policy took effect. They already carry a passing verification.
+  await mergeInternallyReviewedTasks();
 }
 
 export async function enableAutoDevelopment(projectId: string): Promise<void> {
@@ -664,6 +667,29 @@ async function autoMergeReviewedTask(input: {
       reason: "internal_merge_failed",
     }).catch(() => undefined);
     return false;
+  }
+}
+
+/** Recover review tasks left over from before automatic internal merging. */
+export async function mergeInternallyReviewedTasks(projectId?: string): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .select({ taskId: tasks.id, projectId: tasks.projectId, workspaceId: workspaces.id })
+    .from(tasks)
+    .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
+    .where(
+      projectId
+        ? and(eq(tasks.status, "review"), eq(tasks.projectId, projectId))
+        : eq(tasks.status, "review"),
+    );
+  for (const row of rows) {
+    await autoMergeReviewedTask({
+      projectId: row.projectId,
+      taskId: row.taskId,
+      workspaceId: row.workspaceId,
+    }).catch((error) => {
+      console.error("[auto-dev] internal recovery merge failed", error);
+    });
   }
 }
 
