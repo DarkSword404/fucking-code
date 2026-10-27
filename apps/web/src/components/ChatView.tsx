@@ -37,7 +37,7 @@ function turnOf(message: Message): TurnSummary | undefined {
   return raw && typeof raw === "object" ? (raw as TurnSummary) : undefined;
 }
 
-function TurnSummaryLine(props: { turn: TurnSummary }) {
+function TurnSummaryLine(props: { turn: TurnSummary; waiting?: boolean }) {
   const passedTitle = () =>
     props.turn.passed.map((p) => `${p.name}：${p.reason}`).join("\n") || "无";
   return (
@@ -53,7 +53,7 @@ function TurnSummaryLine(props: { turn: TurnSummary }) {
           {props.turn.passed.length} 人沉默 · 查看原因
         </span>
       </Show>
-      <Show when={props.turn.waitingForUser}>
+      <Show when={props.waiting}>
         <span class="turn-chip wait">等待你回答</span>
       </Show>
       <span class="turn-rounds">{props.turn.rounds} 轮</span>
@@ -131,11 +131,23 @@ export function ChatView() {
     setTurnParticipants(next);
   }
 
-  const waitingForUser = () => {
+  const lastUserMessageId = () => {
     const userMessages = messages().filter((message) => message.senderType === "user");
+    return userMessages[userMessages.length - 1]?.id;
+  };
+
+  const waitingForUser = () => {
+    const all = messages();
+    const userMessages = all.filter((message) => message.senderType === "user");
     const last = userMessages[userMessages.length - 1];
     const turn = last ? turnOf(last) : undefined;
-    return turn?.waitingForUser === true;
+    if (!turn?.waitingForUser) return false;
+    // A question only blocks the composer while it is still the latest agent
+    // turn. Newer agent/system turns mean the team moved on (or the question
+    // was an engineering detail that should have been handled internally).
+    const lastAgent = all.filter((message) => message.senderType === "agent").at(-1);
+    const lastTurnId = lastAgent?.metadata?.["turnId"];
+    return !lastTurnId || lastTurnId === turn.turnId;
   };
 
   const suggestions = (): Array<{ label: string; run: () => void }> => {
@@ -330,7 +342,10 @@ export function ChatView() {
                       </div>
                     </Show>
                     <Show when={message.senderType === "user" && turnOf(message)}>
-                      <TurnSummaryLine turn={turnOf(message)!} />
+                      <TurnSummaryLine
+                        turn={turnOf(message)!}
+                        waiting={message.id === lastUserMessageId() && waitingForUser()}
+                      />
                     </Show>
                   </div>
                 </div>
