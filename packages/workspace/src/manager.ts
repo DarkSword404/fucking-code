@@ -1,5 +1,16 @@
-import { spawn } from "node:child_process";
-import { mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { git, gitSafe, gitWithEnv } from "./git.js";
 
@@ -98,12 +109,83 @@ export async function safeWorkspacePath(root: string, relPath: string): Promise<
   return real;
 }
 
+const dependencyBootstraps = new Map<string, Promise<void>>();
+
+/**
+ * A worktree shares the base repository's `node_modules` through a symlink, so
+ * the base repository must have a usable dependency tree before any task runs.
+ * A dangling or self-referential link would otherwise make every `npm test`
+ * fail with ERR_MODULE_NOT_FOUND, which used to surface as an unexplained task
+ * failure. Install once per repository when dependencies are missing.
+ */
+async function ensureBaseDependencies(repo: string): Promise<void> {
+  const running = dependencyBootstraps.get(repo);
+  if (running) return running;
+  const job = (async () => {
+    try {
+      await readFile(join(repo, "package.json"), "utf8");
+    } catch {
+      return; // not a Node project
+    }
+
+    const modules = join(repo, "node_modules");
+    try {
+      const info = await lstat(modules);
+      if (info.isSymbolicLink()) {
+        const link = await readlink(modules).catch(() => "");
+        const target = link ? resolve(dirname(modules), link) : "";
+        // A link that points at itself is an infinite loop and cannot be used.
+        if (!target || target === modules) await rm(modules, { force: true });
+      }
+    } catch {
+      // no node_modules yet
+    }
+
+    try {
+      const info = await stat(modules);
+      if (info.isDirectory() && (await readdir(modules)).length > 0) return;
+    } catch {
+      // missing or dangling
+    }
+
+    await rm(modules, { recursive: true, force: true });
+    const hasLock = await stat(join(repo, "package-lock.json"))
+      .then(() => true)
+      .catch(() => false);
+    const args = hasLock
+      ? ["ci", "--no-audit", "--no-fund"]
+      : ["install", "--no-audit", "--no-fund"];
+    await new Promise<void>((done) => {
+      execFile(
+        "npm",
+        args,
+        { cwd: repo, timeout: 300_000, env: { ...process.env, CI: "1" } },
+        (error, stdout, stderr) => {
+          if (error) {
+            console.error("[workspace] dependency install failed", {
+              repo,
+              error: error.message,
+              output: `${stdout}\n${stderr}`.slice(-800),
+            });
+          }
+          done();
+        },
+      );
+    });
+  })().finally(() => {
+    dependencyBootstraps.delete(repo);
+  });
+  dependencyBootstraps.set(repo, job);
+  return job;
+}
+
 export async function createWorkspace(input: {
   repoPath: string;
   projectId: string;
   taskId: string;
 }): Promise<WorkspaceInfo> {
   const repo = await safeRepoPath(input.repoPath);
+  await ensureBaseDependencies(repo);
   const baseCommit = (await git(repo, ["rev-parse", "HEAD"])).trim();
   const suffix = Date.now().toString(36).slice(-5);
   const branch = `devteam/${input.taskId.slice(0, 8)}-${suffix}`;
@@ -119,8 +201,10 @@ export async function createWorkspace(input: {
     const source = join(repo, dep);
     const target = join(dest, dep);
     try {
-      const info = await stat(source);
-      if (info.isDirectory()) await symlink(source, target, "dir");
+      const info = await lstat(source);
+      const linkSource = info.isSymbolicLink() ? await realpath(source) : source;
+      if (linkSource === target) continue;
+      await symlink(linkSource, target, "dir");
     } catch {
       // dependency directory does not exist or is already tracked
     }
@@ -162,7 +246,10 @@ export async function pushWorkspaceBranch(
     throw new Error(`workspace is on ${currentBranch}, expected ${input.branch}`);
   }
   await git(workspace, ["add", "-A"]);
-  if ((await git(workspace, ["status", "--porcelain"])).trim()) {
+  await git(workspace, ["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "node_modules", ".venv"]).catch(
+    () => undefined,
+  );
+  if ((await git(workspace, ["status", "--porcelain", "--untracked-files=no"])).trim()) {
     await git(workspace, [
       "-c",
       `user.name=${input.authorName}`,
@@ -221,7 +308,13 @@ export async function commitAndMergeWorkspace(
   }
 
   await git(workspace, ["add", "-A"]);
-  const workspaceStatus = await git(workspace, ["status", "--porcelain"]);
+  // Dependency directories are linked from the base repo and must never be
+  // committed. Older repos may still track a node_modules symlink; drop it from
+  // the index so a task cannot re-introduce a self-referential link.
+  await git(workspace, ["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "node_modules", ".venv"]).catch(
+    () => undefined,
+  );
+  const workspaceStatus = await git(workspace, ["status", "--porcelain", "--untracked-files=no"]);
   if (workspaceStatus.trim()) {
     await git(workspace, [
       "-c",

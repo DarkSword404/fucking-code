@@ -51,7 +51,7 @@ export const PHASE_DESCRIPTIONS: Record<WorkflowPhase, string> = {
 
 export type PhaseGateContext = {
   artifacts: Array<{ kind: string; status: string; title: string }>;
-  tasks: Array<{ status: string }>;
+  tasks: Array<{ status: string; id?: string; evidence?: Record<string, unknown> | null }>;
   approvals: Array<{ targetType: string; status: string }>;
 };
 
@@ -65,7 +65,22 @@ export interface GateRequirement {
 export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): GateRequirement[] {
   const hasAccepted = (kind: string) =>
     ctx.artifacts.some((a) => a.kind === kind && a.status === "accepted");
-  const openTasks = ctx.tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+  // A failed task that has already produced a defect successor is superseded:
+  // the successor carries the rework, so the old task must not hold the gate
+  // open forever. Explicit `supersededBy` markers are treated the same way.
+  const superseded = new Set<string>();
+  for (const task of ctx.tasks) {
+    const defectOf = task.evidence?.["defectOf"];
+    if (typeof defectOf === "string") superseded.add(defectOf);
+    if (typeof task.evidence?.["supersededBy"] === "string" && task.id) {
+      superseded.add(task.id);
+    }
+  }
+  const openTasks = ctx.tasks.filter((t) => {
+    if (t.status === "done" || t.status === "cancelled") return false;
+    if (t.id && superseded.has(t.id)) return false;
+    return true;
+  });
 
   switch (phase) {
     case "requirements":

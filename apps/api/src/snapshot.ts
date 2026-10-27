@@ -35,7 +35,7 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
 
   const gateCtx = {
     artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
-    tasks: bundle.tasks.map((t) => ({ status: t.status })),
+    tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
   };
 

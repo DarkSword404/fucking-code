@@ -86,6 +86,7 @@ function buildWorkPrompt(input: {
   roleName: string;
   specContext: string;
   memoryContext?: string;
+  previousFailure?: string;
 }): string {
   return [
     `你是 ${input.roleName}，在 Fucking Code 的一个隔离 Git worktree 中完成一个开发任务。`,
@@ -98,6 +99,7 @@ function buildWorkPrompt(input: {
     "验收标准：",
     ...(input.acceptance.length ? input.acceptance.map((item) => `- ${item}`) : ["- 无额外验收标准"]),
     "",
+    input.previousFailure ? `## 上次失败原因（必须先修复这一点）\n${input.previousFailure}` : "",
     "## 已确认的验收规格（必须满足，测试通过不等于规格满足）",
     input.specContext || "（没有绑定已确认规格，仅以测试为准）",
     input.memoryContext ? `\n## 项目长期记忆\n${input.memoryContext}` : "",
@@ -107,8 +109,9 @@ function buildWorkPrompt(input: {
     "2. 直接实现，改动要小而完整；不要重写无关文件。",
     "3. 运行测试，确保通过；如果失败，先修复再结束。",
     "4. 不要执行 git push、不要切换或合并主分支、不要删除仓库、不要访问工作目录之外的文件。",
-    "5. 结束时用 3-5 句话总结：改了哪些文件、测试结果、剩余风险。",
-  ].join("\n");
+    "5. node_modules / .venv 是从主仓库链接进来的共享依赖目录，只读使用；不要运行 npm install / yarn install 修改它，缺依赖时报告缺口而不是改共享目录。",
+    "6. 结束时用 3-5 句话总结：改了哪些文件、测试结果、剩余风险。",
+  ].filter(Boolean).join("\n");
 }
 
 async function upsertArtifact(input: {
@@ -357,10 +360,11 @@ async function finalizeWork(input: {
       });
     }
 
+    let finalStatus: string = success ? "review" : "failed";
     await db
       .update(tasks)
       .set({
-        status: success ? "review" : "failed",
+        status: finalStatus,
         blockedReason: success
           ? null
           : testResult && testResult.status !== "passed"
@@ -399,28 +403,72 @@ async function finalizeWork(input: {
       })
       .where(eq(tasks.id, task.id));
 
-    if (testResult && testResult.status !== "passed" && !task.title.startsWith("缺陷：")) {
+    const testFailed = Boolean(testResult && testResult.status !== "passed");
+    const specFailed = Boolean(verification && verification.verdict !== "pass");
+    const failureSummary =
+      testResult && testResult.status !== "passed"
+        ? `测试未通过：${testResult.command} (exit ${testResult.exitCode ?? "?"})`
+        : `规格核对未通过：${
+            (verification?.missing ?? []).slice(0, 3).join("；") || "请查看规格核对报告"
+          }`;
+    const isDefectTask = task.title.startsWith("缺陷：");
+    const reworkAttempts = Number(
+      (task.evidence as Record<string, unknown> | null)?.["reworkAttempts"] ?? 0,
+    );
+    if (!success && isDefectTask && (testFailed || specFailed) && reworkAttempts < 3) {
+      // Defect tasks are already the rework unit. Retrying them in the same
+      // worktree is cheaper than creating 缺陷：缺陷：... chains, and the next
+      // prompt carries the exact failure reason.
+      const [current] = await db
+        .select({ evidence: tasks.evidence })
+        .from(tasks)
+        .where(eq(tasks.id, task.id))
+        .limit(1);
+      await db
+        .update(tasks)
+        .set({
+          status: "ready",
+          blockedReason: `第 ${reworkAttempts + 1} 次返工：${failureSummary}`,
+          evidence: { ...(current?.evidence ?? {}), reworkAttempts: reworkAttempts + 1 },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      finalStatus = "ready";
+      await emit(EVENT_TYPES.taskChanged, {
+        taskId: task.id,
+        action: "rework",
+        status: "ready",
+        attempt: reworkAttempts + 1,
+      });
+    }
+    if (!success && !isDefectTask && (testFailed || specFailed)) {
       const siblings = await db.select().from(tasks).where(eq(tasks.projectId, project.id));
-      const alreadyFiled = siblings.some(
+      const existingDefect = siblings.find(
         (candidate) =>
           typeof candidate.evidence?.["defectOf"] === "string" &&
           candidate.evidence["defectOf"] === task.id,
       );
-      if (!alreadyFiled) {
+      let successorId = existingDefect?.id ?? null;
+      if (!successorId) {
         const defectId = uuidv7();
-        const failureTail = testResult.output.slice(-2000);
+        const failureTail =
+          testResult && testResult.status !== "passed" ? testResult.output.slice(-2000) : "";
+        const missing = verification?.missing ?? [];
         await db.insert(tasks).values({
           id: defectId,
           projectId: project.id,
           title: `缺陷：${task.title}`.slice(0, 240),
           description: [
             `由失败任务「${task.title}」自动创建。`,
-            `测试命令：${testResult.command}`,
-            `退出码：${testResult.exitCode ?? "?"}`,
+            testResult && testResult.status !== "passed"
+              ? `测试命令：${testResult.command}\n退出码：${testResult.exitCode ?? "?"}`
+              : "规格核对未通过。",
             "",
-            "失败输出：",
+            testResult && testResult.status !== "passed" ? "失败输出：" : "规格核对缺失：",
             "```text",
-            failureTail,
+            testResult && testResult.status !== "passed"
+              ? failureTail
+              : missing.slice(0, 20).join("\n") || "请查看规格核对报告。",
             "```",
             "",
             "请定位根因、修复并补充回归测试。",
@@ -430,9 +478,20 @@ async function finalizeWork(input: {
           roleKey: task.roleKey,
           requirementVersion: task.requirementVersion,
           spec: task.spec as Record<string, unknown>,
-          acceptance: ["修复失败用例并补充回归测试", "npm test 全部通过"],
+          acceptance:
+            testResult && testResult.status !== "passed"
+              ? ["修复失败用例并补充回归测试", "npm test 全部通过"]
+              : ["补齐规格核对缺失项", "补充覆盖缺失项的测试", "npm test 全部通过"],
           evidence: { defectOf: task.id, sourceTaskTitle: task.title },
         });
+        successorId = defectId;
+        // Reuse the existing worktree for the defect. The implementation may
+        // already be complete and only missing evidence; starting from a fresh
+        // main checkout would silently throw that work away.
+        await db
+          .update(workspaces)
+          .set({ taskId: defectId, status: "ready", updatedAt: new Date() })
+          .where(and(eq(workspaces.projectId, project.id), eq(workspaces.taskId, task.id)));
         await emit(EVENT_TYPES.taskChanged, {
           taskId: defectId,
           action: "created",
@@ -449,9 +508,34 @@ async function finalizeWork(input: {
           action: "task.defect_created",
           targetType: "task",
           targetId: defectId,
-          detail: { sourceTaskId: task.id, testStatus: testResult.status },
+          detail: { sourceTaskId: task.id, testStatus: testResult?.status ?? "not_run" },
         });
       }
+
+      // The failed task is superseded by its defect. Keeping it `failed` would
+      // hold the coding gate open forever while the scheduler only picks
+      // `ready` tasks, which was a silent deadlock in the lifecycle.
+      const [current] = await db
+        .select({ evidence: tasks.evidence })
+        .from(tasks)
+        .where(eq(tasks.id, task.id))
+        .limit(1);
+      await db
+        .update(tasks)
+        .set({
+          status: "cancelled",
+          blockedReason: `已由缺陷任务接续：${successorId}`,
+          evidence: { ...(current?.evidence ?? {}), defectTaskId: successorId },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      finalStatus = "cancelled";
+      await emit(EVENT_TYPES.taskChanged, {
+        taskId: task.id,
+        action: "superseded",
+        status: "cancelled",
+        defectTaskId: successorId,
+      });
     }
 
     await db
@@ -485,7 +569,7 @@ async function finalizeWork(input: {
     await input.emit(EVENT_TYPES.taskChanged, {
       taskId: task.id,
       action: "updated",
-      status: success ? "review" : "failed",
+      status: finalStatus,
     });
     await input.emit(EVENT_TYPES.runStatusChanged, {
       runId,
@@ -625,6 +709,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       roleName: role.displayName,
       specContext: specText,
       memoryContext,
+      previousFailure: task.blockedReason ?? undefined,
     });
 
     const prompted = await opencodeFetch(`/api/session/${sessionId}/prompt`, {
@@ -634,7 +719,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     });
     if (!prompted.ok) throw new Error(`session prompt failed (${prompted.status}): ${prompted.raw.slice(0, 300)}`);
 
-    const codeTimeoutMs = Number(process.env.CODE_TASK_TIMEOUT_MS ?? 15 * 60 * 1000);
+    const codeTimeoutMs = Number(process.env.CODE_TASK_TIMEOUT_MS ?? 25 * 60 * 1000);
     const deadline = Date.now() + codeTimeoutMs;
     let info: Record<string, unknown> | null = null;
     while (Date.now() < deadline) {
@@ -803,9 +888,24 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       .update(agentRuns)
       .set({ status: "failed", endedAt: new Date(), error: message.slice(0, 2000) })
       .where(eq(agentRuns.id, runId));
+    // A wall-clock timeout is usually a scope problem, not a code failure. The
+    // worktree keeps the partial work, so retry once or twice instead of
+    // parking the task in `blocked` where the scheduler would never pick it up.
+    const timedOut = /timed out/i.test(message);
+    const timeoutAttempts = Number(
+      (task.evidence as Record<string, unknown> | null)?.["timeoutAttempts"] ?? 0,
+    );
+    const retry = timedOut && timeoutAttempts < 2 && !task.title.startsWith("缺陷：");
     await db
       .update(tasks)
-      .set({ status: "blocked", blockedReason: message.slice(0, 500), updatedAt: new Date() })
+      .set({
+        status: retry ? "ready" : "blocked",
+        blockedReason: retry
+          ? `代码任务超时，已保留工作区并自动重试（第 ${timeoutAttempts + 1} 次）`
+          : message.slice(0, 500),
+        evidence: { ...(task.evidence ?? {}), timeoutAttempts: timeoutAttempts + 1 },
+        updatedAt: new Date(),
+      })
       .where(eq(tasks.id, task.id));
     await insertMessage({
       id: uuidv7(),
@@ -815,8 +915,10 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       senderType: "system",
       senderName: "系统",
       type: "system_event",
-      content: `${role.displayName} 的代码任务没有跑完：${message.slice(0, 400)}`,
-      metadata: { runId, taskId: task.id, workspaceId: workspace.id, sessionId },
+      content: retry
+        ? `${role.displayName} 的代码任务超时，已保留工作区改动，自动重试第 ${timeoutAttempts + 1} 次。`
+        : `${role.displayName} 的代码任务没有跑完：${message.slice(0, 400)}`,
+      metadata: { runId, taskId: task.id, workspaceId: workspace.id, sessionId, retry },
     });
     await input.emit(EVENT_TYPES.runStatusChanged, {
       runId,

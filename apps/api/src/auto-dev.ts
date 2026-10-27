@@ -40,9 +40,23 @@ import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.j
 import { startPreview } from "./preview.js";
 
 const schedulerLocks = new Set<string>();
+/** Projects with a task in the middle of workspace allocation. */
+const startingProjects = new Set<string>();
 const pausedProjects = new Set<string>();
+/** Why the scheduler last paused a project. User-initiated pauses have no entry. */
+const autoPauseReasons = new Map<string, string>();
+const AUTO_PAUSE_LABELS: Record<string, string> = {
+  pending_decisions: "还有待决策项",
+  artifact_decision: "产物需要确认",
+  artifact_batch_accepted: "产物已接受，准备继续",
+  decision: "产生了新的产品决策",
+  approval: "产生了新的审批项",
+  task_merged: "任务刚合并",
+  task_failed: "任务失败",
+};
 const phaseNudgeLocks = new Set<string>();
 const lastPhaseNudge = new Map<string, number>();
+const lastGateNotice = new Map<string, number>();
 const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
@@ -114,11 +128,45 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     if (!bundle) return;
     const requirements = gateRequirementsForTransition(from, next, {
       artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
-      tasks: bundle.tasks.map((t) => ({ status: t.status })),
+      tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     });
-    if (!requirements.every((r) => r.met)) return;
+    if (!requirements.every((r) => r.met)) {
+      // Idle is not an error: the scheduler has no ready work because a gate is
+      // waiting for evidence (for example Security's SCA/SAST reports). Say so
+      // explicitly instead of looking like the conversation silently stopped.
+      const lastNotice = lastGateNotice.get(projectId) ?? 0;
+      if (Date.now() - lastNotice >= 10 * 60_000) {
+        lastGateNotice.set(projectId, Date.now());
+        const unmet = requirements.filter((r) => !r.met);
+        const messageId = uuidv7();
+        await insertMessage({
+          id: messageId,
+          tenantId: project.tenantId,
+          projectId: project.id,
+          roomId: room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+          content: [
+            `自动开发当前没有可执行任务；${PHASE_LABELS[from]}门禁尚未满足。`,
+            `还差：${unmet.map((r) => r.label).join("、")}。`,
+            "这不是对话中断：补齐上述证据/任务后，Lead 会自动发起阶段推进。",
+          ].join("\n"),
+          metadata: { kind: "gate_waiting", phase: from, unmet: unmet.map((r) => r.key), trigger },
+        });
+        await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+          messageId,
+          roomId: room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+        });
+      }
+      return;
+    }
 
+    lastGateNotice.delete(projectId);
     lastPhaseNudge.set(projectId, Date.now());
     const messageId = uuidv7();
     const content = [
@@ -189,14 +237,39 @@ export async function pauseAutoDevelopment(
   const db = getDb();
   const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project || !project.autoStartTasks) return;
+  autoPauseReasons.set(projectId, reason);
   await db
     .update(projects)
     .set({ autoStartTasks: false, updatedAt: new Date(), version: project.version + 1 })
     .where(eq(projects.id, projectId));
-  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+  const emit = projectEmitter(project.tenantId, project.id);
+  await emit(EVENT_TYPES.projectChanged, {
     action: "auto_paused",
     reason,
   });
+  const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
+  if (room) {
+    const messageId = uuidv7();
+    const label = AUTO_PAUSE_LABELS[reason] ?? reason;
+    await insertMessage({
+      id: messageId,
+      tenantId: project.tenantId,
+      projectId: project.id,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+      content: `自动开发已暂停：${label}。处理完该项后会自动继续；如果只想让它停下，请在项目设置里关闭自动开发。`,
+      metadata: { kind: "auto_paused", reason },
+    });
+    await emit(EVENT_TYPES.messageCreated, {
+      messageId,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+    });
+  }
 }
 
 /** Create and attach a local repository for projects that came without one. */
@@ -296,9 +369,56 @@ export async function recoverOrphanedTasks(): Promise<void> {
       ).catch(() => undefined);
     }
   }
+  // A failed task that was superseded by a defect may still own the worktree
+  // with the actual implementation. Move that workspace to the defect before
+  // the scheduler starts it, instead of starting from a clean main checkout.
+  const cancelledRows = await db.select().from(tasks).where(eq(tasks.status, "cancelled"));
+  for (const oldTask of cancelledRows) {
+    const defectId = (oldTask.evidence as Record<string, unknown> | null)?.["defectTaskId"];
+    if (typeof defectId !== "string") continue;
+    const [defect] = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, defectId), eq(tasks.projectId, oldTask.projectId)))
+      .limit(1);
+    if (!defect || !["ready", "in_progress", "blocked"].includes(defect.status)) continue;
+    const [oldWorkspace] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.taskId, oldTask.id))
+      .limit(1);
+    if (!oldWorkspace) continue;
+    const [existingSuccessor] = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.taskId, defect.id))
+      .limit(1);
+    if (existingSuccessor) continue;
+    await db
+      .update(workspaces)
+      .set({ taskId: defect.id, status: "ready", updatedAt: new Date() })
+      .where(eq(workspaces.id, oldWorkspace.id));
+    const [owner] = await db
+      .select({ tenantId: projects.tenantId })
+      .from(projects)
+      .where(eq(projects.id, oldTask.projectId))
+      .limit(1);
+    if (owner) {
+      await projectEmitter(owner.tenantId, oldTask.projectId)(EVENT_TYPES.taskChanged, {
+        taskId: defect.id,
+        action: "workspace_reused",
+        workspaceId: oldWorkspace.id,
+      }).catch(() => undefined);
+    }
+  }
   // Also finish review tasks that were waiting for a human merge before this
   // policy took effect. They already carry a passing verification.
   await mergeInternallyReviewedTasks();
+}
+
+/** Clear a scheduler pause reason after a manual toggle. */
+export function clearAutoPauseReason(projectId: string): void {
+  autoPauseReasons.delete(projectId);
 }
 
 export async function enableAutoDevelopment(projectId: string): Promise<void> {
@@ -316,6 +436,7 @@ export async function enableAutoDevelopment(projectId: string): Promise<void> {
     action: "auto_resumed",
   });
   pausedProjects.delete(projectId);
+  autoPauseReasons.delete(projectId);
   await autoStartNext(projectId);
 }
 
@@ -410,7 +531,9 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
   const orchestrator = new Orchestrator({
     runtime,
     emit,
+    maxRounds: 2,
     maxSpeakersPerRound: 1,
+    maxMessagesPerTurn: 3,
   });
   await new Promise<void>((resolve) => {
     roomQueue.enqueue(room.id, async (signal) => {
@@ -441,7 +564,9 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
     .where(eq(messages.id, feedbackId))
     .limit(1);
   const turn = feedbackMessage?.metadata?.["turn"] as TurnSummary | undefined;
-  if (turn?.waitingForUser) pausedProjects.add(project.id);
+  // Task feedback is a status update, not a client decision. If the agents ask
+  // a question here, keep the coding queue moving; genuine product questions
+  // belong in the normal room conversation.
   return turn?.waitingForUser === true;
 }
 
@@ -451,6 +576,25 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
  * worktree lifecycle and post-task room feedback.
  */
 export async function startTaskForProject(
+  project: ProjectRow,
+  task: TaskRow,
+  options: { auto?: boolean } = {},
+): Promise<typeof workspaces.$inferSelect> {
+  // Workspace creation is async (dependency bootstrap). Without this lock the
+  // periodic scheduler can start a second task while the first is still
+  // allocating its worktree.
+  if (startingProjects.has(project.id)) {
+    throw new Error("another task is already starting for this project");
+  }
+  startingProjects.add(project.id);
+  try {
+    return await enqueueTaskWork(project, task, options);
+  } finally {
+    startingProjects.delete(project.id);
+  }
+}
+
+async function enqueueTaskWork(
   project: ProjectRow,
   task: TaskRow,
   options: { auto?: boolean } = {},
@@ -623,7 +767,13 @@ async function autoMergeReviewedTask(input: {
   // This is called from the workQueue callback's finally block, where the
   // queue still considers itself running. The code run itself has finished,
   // so the meaningful guard is status + verification.
-  if (task.status !== "review" || verification?.verdict !== "pass") {
+  // A merge blocked by a transient problem (dirty base repo, lock) is kept in
+  // review for the periodic retry. Only give up after repeated failures.
+  const recoverableMerge =
+    task.status === "blocked" &&
+    /^内部自动合并失败/.test(task.blockedReason ?? "") &&
+    Number(evidence["mergeAttempts"] ?? 0) < 5;
+  if ((task.status !== "review" && !recoverableMerge) || verification?.verdict !== "pass") {
     return false;
   }
 
@@ -703,19 +853,25 @@ async function autoMergeReviewedTask(input: {
     return true;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    const attempts = Number(evidence["mergeAttempts"] ?? 0) + 1;
+    // Transient merge failures should heal without user action. Five attempts
+    // covers a dirty base repo that the next internal merge/checkout cleans up.
+    const giveUp = attempts >= 5;
     await db
       .update(tasks)
       .set({
-        status: "blocked",
-        blockedReason: `内部自动合并失败：${reason.slice(0, 800)}`,
+        status: giveUp ? "blocked" : "review",
+        blockedReason: `内部自动合并失败（第 ${attempts} 次）：${reason.slice(0, 760)}`,
+        evidence: { ...evidence, mergeAttempts: attempts },
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, task.id));
     await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
       taskId: task.id,
       action: "updated",
-      status: "blocked",
+      status: giveUp ? "blocked" : "review",
       reason: "internal_merge_failed",
+      attempts,
     }).catch(() => undefined);
     return false;
   }
@@ -733,8 +889,8 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
     .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
     .where(
       projectId
-        ? and(eq(tasks.status, "review"), eq(tasks.projectId, projectId))
-        : eq(tasks.status, "review"),
+        ? and(inArray(tasks.status, ["review", "blocked"]), eq(tasks.projectId, projectId))
+        : inArray(tasks.status, ["review", "blocked"]),
     );
   for (const row of rows) {
     await autoMergeReviewedTask({
@@ -753,26 +909,50 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
  * idempotent; the periodic loop and event hooks may both call it.
  */
 export async function autoStartNext(projectId: string): Promise<void> {
-  if (schedulerLocks.has(projectId) || pausedProjects.has(projectId)) return;
+  if (schedulerLocks.has(projectId) || pausedProjects.has(projectId) || startingProjects.has(projectId)) return;
   schedulerLocks.add(projectId);
   try {
     const db = getDb();
-    const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    let [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!project) return;
-    if (project.phase !== "coding" || !project.autoStartTasks || !project.repoPath) return;
     if (project.status === "archived") return;
-    try {
-      await validateRepoPath(project.repoPath);
-    } catch {
-      return;
-    }
+    if (project.phase !== "coding" || !project.repoPath) return;
+    const repoPath = project.repoPath;
+
     // A task that just reached review is not a human decision yet. Merge
     // verified review tasks before treating review as a pending decision;
     // otherwise the feedback window can persist autoStartTasks=false even
-    // after the internal merge succeeds.
+    // after the internal merge succeeds. Internal review does not require the
+    // user, so run it even while auto development is paused.
     await mergeInternallyReviewedTasks(projectId);
-    if (await hasPendingDecisions(projectId)) {
+
+    if (!project.autoStartTasks) {
+      const pauseReason = autoPauseReasons.get(projectId);
+      // No recorded system reason means the user turned auto development off.
+      if (!pauseReason) return;
+      if (await hasPendingDecisions(projectId)) return;
+      // The blocker that caused a system pause is gone: resume without making
+      // the user click "继续自动开发" again.
+      const [resumed] = await db
+        .update(projects)
+        .set({ autoStartTasks: true, updatedAt: new Date(), version: project.version + 1 })
+        .where(eq(projects.id, projectId))
+        .returning();
+      if (!resumed) return;
+      project = resumed;
+      autoPauseReasons.delete(projectId);
+      await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+        action: "auto_resumed",
+        reason: pauseReason,
+      });
+    } else if (await hasPendingDecisions(projectId)) {
       await pauseAutoDevelopment(projectId, "pending_decisions");
+      return;
+    }
+
+    try {
+      await validateRepoPath(repoPath);
+    } catch {
       return;
     }
 

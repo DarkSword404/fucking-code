@@ -84,6 +84,7 @@ import {
 } from "./http.js";
 import {
   autoStartNext,
+  clearAutoPauseReason,
   enableAutoDevelopment,
   hasPendingDecisions,
   ensureProjectRepository,
@@ -964,6 +965,7 @@ app.patch("/api/v1/projects/:projectId", async (c) => {
     action: "updated",
   });
   if (updated.autoStartTasks) void autoStartNext(updated.id);
+  else clearAutoPauseReason(updated.id);
   return c.json(await buildSnapshot(updated));
 });
 
@@ -2179,7 +2181,7 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     if (!bundle) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
     transitionRequirements = gateRequirementsForTransition(from, phaseTarget, {
       artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
-      tasks: bundle.tasks.map((t) => ({ status: t.status })),
+      tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     });
     if (!transitionRequirements.every((r) => r.met)) {
@@ -2319,7 +2321,7 @@ app.all("/preview/:token/*", async (c) => {
       ? rewritePreviewHtml(text, token)
       : rewritePreviewText(text, token);
     if (type.includes("text/html")) {
-      const patch = `<script>(()=>{const p="/preview/${token}";const a=history.pushState,b=history.replaceState;history.pushState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return a.call(this,s,t,u)};history.replaceState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return b.call(this,s,t,u)}})();</script>`;
+      const patch = `<script>(()=>{const p="/preview/${token}";const a=history.pushState,b=history.replaceState;history.pushState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return a.call(this,s,t,u)};history.replaceState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return b.call(this,s,t,u)};const f=window.fetch;window.fetch=function(i,n){if(typeof i==="string"&&i.startsWith("/")&&!i.startsWith(p)&&!i.startsWith("//")){const k=i.indexOf(p+"/");i=k>0?p+i.slice(0,k)+i.slice(k+p.length):p+i}return f.call(this,i,n)}})();</script>`;
       text = text.replace(/<head([^>]*)>/i, `<head$1>${patch}`);
     }
     body = text;
@@ -2380,7 +2382,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
   if (!bundle) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
   const gateCtx = {
     artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
-    tasks: bundle.tasks.map((t) => ({ status: t.status })),
+    tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
   };
   const requirements = gateRequirementsForTransition(from, to, gateCtx);
@@ -2604,6 +2606,51 @@ app.get("/api/v1/workspaces/:workspaceId/diff", async (c) => {
   const { workspace } = await requireWorkspace(c);
   const diff = await workspaceDiff(workspace.path, workspace.baseCommit);
   return c.json({ diff });
+});
+
+const rebindWorkspaceSchema = z.object({ taskId: z.string().min(1) });
+
+/**
+ * Attach an existing worktree to another task. This is a recovery tool: when a
+ * failed task is superseded by a defect, or a verification workspace outlives
+ * its task row, the implementation must not be thrown away.
+ */
+app.post("/api/v1/workspaces/:workspaceId/rebind", async (c) => {
+  const { workspace, project, role } = await requireWorkspace(c);
+  if (role === "viewer") throw new HttpError(403, "READ_ONLY", "Viewers cannot rebind workspaces.");
+  if (workQueue.isRunning(workspace.id)) {
+    throw new HttpError(409, "WORK_ALREADY_RUNNING", "工作区还有运行中的任务，结束后再重新绑定。");
+  }
+  const body = rebindWorkspaceSchema.parse(await c.req.json());
+  const db = getDb();
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, body.taskId), eq(tasks.projectId, project.id)))
+    .limit(1);
+  if (!task) throw new HttpError(404, "TASK_NOT_FOUND", "Task not found.");
+  if (["done", "cancelled"].includes(task.status)) {
+    throw new HttpError(409, "TASK_CLOSED", `Task is ${task.status}.`);
+  }
+  const [existing] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.taskId, task.id))
+    .limit(1);
+  if (existing && existing.id !== workspace.id) {
+    throw new HttpError(409, "WORKSPACE_EXISTS", "该任务已经绑定了另一个工作区。");
+  }
+  const [updated] = await db
+    .update(workspaces)
+    .set({ taskId: task.id, status: "ready", updatedAt: new Date() })
+    .where(eq(workspaces.id, workspace.id))
+    .returning();
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+    taskId: task.id,
+    action: "workspace_rebound",
+    workspaceId: workspace.id,
+  });
+  return c.json(updated);
 });
 
 app.get("/api/v1/workspaces/:workspaceId/test-runs", async (c) => {

@@ -137,6 +137,43 @@ describe("workflow gates", () => {
     expect(closed.every((r) => r.met)).toBe(true);
   });
 
+  test("a failed task superseded by a defect does not deadlock the coding gate", () => {
+    const artifacts = [
+      { kind: "sca_report", status: "accepted", title: "SCA" },
+      { kind: "sast_report", status: "accepted", title: "SAST" },
+      { kind: "code_audit", status: "accepted", title: "Audit" },
+    ];
+    const evaluating = gateRequirements("coding", {
+      artifacts,
+      tasks: [
+        { id: "failed-1", status: "failed" },
+        { id: "defect-1", status: "in_progress", evidence: { defectOf: "failed-1" } },
+      ],
+      approvals: [],
+    });
+    expect(evaluating.find((r) => r.key === "tasks_closed")?.met).toBe(false);
+
+    const repaired = gateRequirements("coding", {
+      artifacts,
+      tasks: [
+        { id: "failed-1", status: "failed" },
+        { id: "defect-1", status: "done", evidence: { defectOf: "failed-1" } },
+      ],
+      approvals: [],
+    });
+    expect(repaired.every((r) => r.met)).toBe(true);
+
+    const explicit = gateRequirements("coding", {
+      artifacts,
+      tasks: [
+        { id: "old", status: "failed", evidence: { supersededBy: "other-task" } },
+        { id: "other", status: "done" },
+      ],
+      approvals: [],
+    });
+    expect(explicit.every((r) => r.met)).toBe(true);
+  });
+
   test("six-stage forward chain and persistent operations", () => {
     expect(nextPhase("requirements")).toBe("design");
     expect(nextPhase("design")).toBe("coding");
