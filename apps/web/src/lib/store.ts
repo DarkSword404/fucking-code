@@ -105,13 +105,18 @@ export function isWorkspaceRunning(
   );
 }
 
+export function productDecisionCount(snap: ProjectSnapshot | null = snapshot()): number {
+  if (!snap) return 0;
+  return snap.decisions.filter((item) => item.status === "proposed").length;
+}
+
 export function pendingDecisionCount(snap: ProjectSnapshot | null = snapshot()): number {
   if (!snap) return 0;
+  // Only client-facing blockers count. Proposed product decisions are shown
+  // in the inbox but do not stop coding/testing; review tasks are internal.
   return (
     snap.approvals.filter((item) => item.status === "pending").length +
-    snap.artifacts.filter((item) => item.status === "in_review").length +
-    snap.decisions.filter((item) => item.status === "proposed").length +
-    snap.tasks.filter((item) => ["review", "testing"].includes(item.status)).length
+    snap.artifacts.filter((item) => item.status === "in_review").length
   );
 }
 

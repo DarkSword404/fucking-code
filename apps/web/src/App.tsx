@@ -21,6 +21,7 @@ import {
   openDecisionInbox,
   openPreview,
   pendingDecisionCount,
+  productDecisionCount,
   projects,
   requestAdvance,
   resumeAutoDevelopment,
@@ -154,6 +155,7 @@ function Workspace() {
 
   const snap = () => snapshot();
   const pending = () => pendingDecisionCount(snap());
+  const productDecisions = () => productDecisionCount(snap());
   const isAdminView = () => view() === "admin";
   const isOwner = () => {
     const id = snap()?.project.id;
@@ -216,8 +218,13 @@ function Workspace() {
             </button>
           </Show>
           <Show when={pending() && !isAdminView()}>
-            <button class="btn" onClick={openDecisionInbox}>
-              <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待决策
+            <button class="btn" onClick={openDecisionInbox} title="产品审批会暂停自动开发">
+              <span style={{ color: "#f5b544" }}>●</span> {pending()} 项待产品审批
+            </button>
+          </Show>
+          <Show when={productDecisions() && !isAdminView()}>
+            <button class="btn" onClick={openDecisionInbox} title="产品决策不阻塞编码/测试">
+              {productDecisions()} 项产品决策
             </button>
           </Show>
           <Show

@@ -63,7 +63,7 @@ export function DecisionInbox() {
         <div class="modal decision-modal" onClick={(event) => event.stopPropagation()}>
           <div class="decision-head">
             <div>
-              <h3>待你决策</h3>
+              <h3>需要你确认的产品事项</h3>
               <p>你需要先处理这些事项，自动开发才会继续。</p>
             </div>
             <span class="badge warn">{count()} 项</span>
@@ -255,7 +255,7 @@ export function DecisionInbox() {
           </Show>
 
           <Show when={decisions().length}>
-            <div class="decision-section-title">决策</div>
+            <div class="decision-section-title">产品决策（不阻塞开发）</div>
             <For each={decisions()}>
               {(decision) => (
                 <div class="decision-item">
@@ -282,9 +282,9 @@ export function DecisionInbox() {
 
           <Show when={!count()}>
             <div class="decision-done">
-              <div class="decision-done-title">待决策项已处理完</div>
+              <div class="decision-done-title">没有阻塞项</div>
               <p>
-                自动开发已暂停。确认没有遗漏后，再继续下一个任务；不会在你点按钮前自动开跑。
+                编码、测试、规格核对和合并由团队内部自动完成，不需要你逐项确认。
               </p>
               <Show when={!hasRepo()}>
                 <div class="decision-note">
@@ -304,12 +304,12 @@ export function DecisionInbox() {
 
           <Show when={count() && snap()?.project.autoStartTasks}>
             <div class="decision-note">
-              还有待决策项时，自动开发会暂停。处理完后也不会自动继续，需要你点「继续自动开发」。
+              产品决策不会阻塞编码/测试；只有产品审批会暂停队列。暂停项处理完后会自动继续，无需手动点「继续自动开发」。
             </div>
           </Show>
 
           <div class="modal-actions">
-            <span class="decision-foot-note">自动开发只负责开发；代码仍需测试、规格核对和人工验收合并。</span>
+            <span class="decision-foot-note">工程流程由团队内部完成；这里只处理产品范围、优先级和产品审批。</span>
             <button class="btn" onClick={closeDecisionInbox}>
               稍后处理
             </button>
