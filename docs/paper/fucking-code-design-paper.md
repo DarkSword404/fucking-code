@@ -354,7 +354,7 @@ Fucking Code 将自身定义为“AI 乙方研发团队”，而不是“更聪�
 1. **甲方在场**：用户是客户，不是命令源；团队可以问、可以反驳。
 2. **广播而非路由**：所有房间成员收到每条消息，各自判断是否发言。
 3. **单声道发言**：每一轮只有一个人把话说完，避免多人同时输出。
-4. **角色异质**：PM、Architect、Lead、Frontend、Backend、QA、Security 各自有职责边界。
+4. **角色异质**：PM、Architect、Lead、Frontend、Backend、QA、Security、DevOps 各自有职责边界。
 5. **规格即合同**：任务绑定已接受的 PRD 和验收标准，测试通过不等于规格满足。
 6. **门禁即制度**：AI 判断阶段、服务端校验门禁后内部推进；阶段图允许回退与迭代。甲方只处理产品决策；技术产物、代码评审与合并由团队内部 QA/Lead 按证据批准。
 7. **变更即候选**：代码先进入隔离 worktree，通过验收后才进入主分支。
@@ -722,7 +722,7 @@ Fucking Code 的设计价值不在于“又做了一个 AI 编程工具”，而
 | 甲方在场 | `buildSystemPrompt` / `buildPrompt` 的甲方/乙方协议；`ask_user` 暂停；UI 甲方徽标 |
 | 广播而非路由 | 房间成员 broadcast；注意力判断；`PASS/SPEAK` |
 | 单声道发言 | `MAX_SPEAKERS_PER_ROUND=1`；阶段负责人/被 @/交接优先；轮次队列 |
-| 角色异质 | PM / Architect / Lead / Frontend / Backend / QA / Security 默认角色 |
+| 角色异质 | PM / Architect / Lead / Frontend / Backend / QA / Security / DevOps 默认角色 |
 | 规格即合同 | `captureAcceptedSpec`；任务 `spec` 快照；QA `verifyWork` |
 | 门禁即制度 | `gateRequirements`；产物接受；审批；强制推进理由 |
 | 变更即候选 | Git worktree；分支；Diff；内部评审合并；PR |

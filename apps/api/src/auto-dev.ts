@@ -37,6 +37,7 @@ import {
   validateRepoPath,
 } from "@devteam/workspace";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
+import { startPreview } from "./preview.js";
 
 const schedulerLocks = new Set<string>();
 const pausedProjects = new Set<string>();
@@ -473,14 +474,54 @@ export async function startTaskForProject(
       } catch (error) {
         console.error("[auto-dev] task feedback failed", error);
       }
+      let internallyMerged = false;
       try {
-        await autoMergeReviewedTask({
+        internallyMerged = await autoMergeReviewedTask({
           projectId: project.id,
           taskId: task.id,
           workspaceId: workspace.id,
         });
       } catch (error) {
         console.error("[auto-dev] internal merge failed", error);
+      }
+      if (internallyMerged) {
+        try {
+          const openRows = await getDb()
+            .select({ id: tasks.id })
+            .from(tasks)
+            .where(and(eq(tasks.projectId, project.id), inArray(tasks.status, ["proposed", "ready", "in_progress", "review", "testing", "blocked", "failed", "needs_replan", "stale"])));
+          if (!openRows.length && project.repoPath) {
+            const preview = await startPreview(project.id, project.repoPath);
+            const [room] = await getDb()
+              .select()
+              .from(rooms)
+              .where(eq(rooms.projectId, project.id))
+              .limit(1);
+            if (room) {
+              const messageId = uuidv7();
+              await insertMessage({
+                id: messageId,
+                tenantId: project.tenantId,
+                projectId: project.id,
+                roomId: room.id,
+                senderType: "system",
+                senderName: "系统",
+                type: "system_event",
+                content: `当前任务已全部完成，项目预览已启动：${preview.url}`,
+                metadata: { kind: "preview_started", url: preview.url, port: preview.port },
+              });
+              await emit(EVENT_TYPES.messageCreated, {
+                messageId,
+                roomId: room.id,
+                senderType: "system",
+                senderName: "系统",
+                type: "system_event",
+              });
+            }
+          }
+        } catch (error) {
+          console.error("[auto-dev] auto preview failed", error);
+        }
       }
       const [fresh] = await getDb()
         .select({ status: tasks.status })
