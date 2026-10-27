@@ -2149,15 +2149,18 @@ async function ensurePhaseApproval(project: ProjectRow, to: WorkflowPhase, versi
     targetType,
     targetVersion: version,
     title,
-    status: "pending",
+    status: "approved",
     requestedBy: "system",
-    reason: `进入${PHASE_LABELS[to]}阶段需要人工确认。`,
+    decidedBy: "Fucking Code 内部评审",
+    decidedAt: new Date(),
+    reason: `进入${PHASE_LABELS[to]}阶段已由内部评审通过。`,
   });
   await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.approvalChanged, {
     approvalId,
-    action: "requested",
+    action: "approved",
     title,
     targetType,
+    internal: true,
   });
 }
 

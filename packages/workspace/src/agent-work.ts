@@ -17,7 +17,7 @@ import {
   testRuns,
   workspaces,
 } from "@devteam/db";
-import { canonicalArtifactKey, uuidv7 } from "@devteam/domain";
+import { canonicalArtifactKey, initialArtifactStatus, uuidv7 } from "@devteam/domain";
 import {
   detectTestCommand,
   runCommand,
@@ -126,7 +126,7 @@ async function upsertArtifact(input: {
         artifactKey,
         title: input.title,
         currentVersion: version,
-        status: "in_review",
+        status: initialArtifactStatus(input.kind),
         updatedAt: new Date(),
       })
       .where(eq(artifacts.id, existing.id));
@@ -148,7 +148,7 @@ async function upsertArtifact(input: {
     kind: input.kind,
     artifactKey,
     title: input.title,
-    status: "in_review",
+    status: initialArtifactStatus(input.kind),
     currentVersion: 1,
     createdByType: "agent",
     updatedAt: new Date(),

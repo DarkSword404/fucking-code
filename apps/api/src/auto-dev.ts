@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { Orchestrator, opencodeFetch } from "@devteam/agents";
 import {
   EVENT_TYPES,
@@ -30,6 +30,7 @@ import {
   uuidv7,
 } from "@devteam/domain";
 import {
+  commitAndMergeWorkspace,
   createWorkspace,
   ensureProjectRepo,
   runTaskWork,
@@ -250,6 +251,32 @@ export async function recoverOrphanedTasks(): Promise<void> {
     .update(agentRuns)
     .set({ status: "cancelled", endedAt: new Date(), error: "服务重启，运行已中断" })
     .where(eq(agentRuns.status, "running"));
+  // Technical evidence is internal review material. Migrate old pending
+  // artifacts so the client only sees PRD / acceptance decisions.
+  await db
+    .update(artifacts)
+    .set({ status: "accepted", updatedAt: new Date() })
+    .where(
+      and(
+        eq(artifacts.status, "in_review"),
+        notInArray(artifacts.kind, ["prd", "acceptance_criteria"]),
+      ),
+    );
+  // Phase review / delivery are engineering gates, not client decisions.
+  await db
+    .update(approvals)
+    .set({
+      status: "approved",
+      decidedBy: "Fucking Code 内部评审",
+      decidedAt: new Date(),
+      reason: "工程门禁由 QA / Lead 内部评审通过",
+    })
+    .where(
+      and(
+        eq(approvals.status, "pending"),
+        inArray(approvals.targetType, ["phase_review", "delivery"]),
+      ),
+    );
   const rows = await db
     .select({ task: tasks, workspace: workspaces })
     .from(tasks)
@@ -452,6 +479,15 @@ export async function startTaskForProject(
       } catch (error) {
         console.error("[auto-dev] task feedback failed", error);
       }
+      try {
+        await autoMergeReviewedTask({
+          projectId: project.id,
+          taskId: task.id,
+          workspaceId: workspace.id,
+        });
+      } catch (error) {
+        console.error("[auto-dev] internal merge failed", error);
+      }
       const [fresh] = await getDb()
         .select({ status: tasks.status })
         .from(tasks)
@@ -505,6 +541,130 @@ export async function startTaskForProject(
     }
   });
   return workspace;
+}
+
+/**
+ * Internal review: a task with a passing QA/spec verification is merged by the
+ * team itself. The client is not asked to understand branches, diffs or merge
+ * mechanics; they only approve product intent. A conflict becomes an internal
+ * blocked task, not a human approval prompt.
+ */
+async function autoMergeReviewedTask(input: {
+  projectId: string;
+  taskId: string;
+  workspaceId: string;
+}): Promise<boolean> {
+  const db = getDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1);
+  if (!project || !project.repoPath) return false;
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, input.taskId), eq(tasks.projectId, input.projectId)))
+    .limit(1);
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(and(eq(workspaces.id, input.workspaceId), eq(workspaces.projectId, input.projectId)))
+    .limit(1);
+  if (!task || !workspace) return false;
+  const evidence = (task.evidence ?? {}) as Record<string, unknown>;
+  const verification = evidence["verification"] as { verdict?: string } | undefined;
+  // This is called from the workQueue callback's finally block, where the
+  // queue still considers itself running. The code run itself has finished,
+  // so the meaningful guard is status + verification.
+  if (task.status !== "review" || verification?.verdict !== "pass") {
+    return false;
+  }
+
+  try {
+    const merged = await commitAndMergeWorkspace({
+      repoPath: project.repoPath,
+      workspacePath: workspace.path,
+      branch: workspace.branch,
+      baseBranch: project.defaultBranch || "main",
+      message: task.title,
+      authorName: "Fucking Code 内部评审",
+      authorEmail: "internal@fucking-code.local",
+    });
+    const mergedAt = new Date().toISOString();
+    await db
+      .update(tasks)
+      .set({
+        status: "done",
+        blockedReason: null,
+        evidence: {
+          ...evidence,
+          merge: {
+            commit: merged.commit,
+            branch: merged.branch,
+            baseBranch: merged.baseBranch,
+            mergedAt,
+            mergedBy: "Fucking Code 内部评审（QA/Lead）",
+            automatic: true,
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id));
+    await db
+      .update(workspaces)
+      .set({ status: "merged", updatedAt: new Date() })
+      .where(eq(workspaces.id, workspace.id));
+
+    const [room] = await db.select().from(rooms).where(eq(rooms.projectId, project.id)).limit(1);
+    if (room) {
+      const messageId = uuidv7();
+      await insertMessage({
+        id: messageId,
+        tenantId: project.tenantId,
+        projectId: project.id,
+        roomId: room.id,
+        senderType: "system",
+        senderName: "系统",
+        type: "system_event",
+        content: `内部评审通过，已自动合并「${task.title}」到 ${merged.baseBranch}（${merged.commit.slice(0, 8)}）。`,
+        metadata: {
+          kind: "internal_merge",
+          taskId: task.id,
+          workspaceId: workspace.id,
+          commit: merged.commit,
+        },
+      });
+      await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+        messageId,
+        roomId: room.id,
+        senderType: "system",
+        senderName: "系统",
+        type: "system_event",
+      });
+    }
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+      taskId: task.id,
+      action: "merged",
+      status: "done",
+      commit: merged.commit,
+      internal: true,
+    });
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await db
+      .update(tasks)
+      .set({
+        status: "blocked",
+        blockedReason: `内部自动合并失败：${reason.slice(0, 800)}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id));
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+      taskId: task.id,
+      action: "updated",
+      status: "blocked",
+      reason: "internal_merge_failed",
+    }).catch(() => undefined);
+    return false;
+  }
 }
 
 /**

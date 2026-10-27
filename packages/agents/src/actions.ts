@@ -18,6 +18,7 @@ import {
   canTransitionPhase,
   canonicalArtifactKey,
   gateRequirementsForTransition,
+  initialArtifactStatus,
   uuidv7,
   type AskUserAction,
   type BlockAction,
@@ -280,7 +281,7 @@ export async function applyActions(
                 artifactKey,
                 title: a.title,
                 currentVersion: version,
-                status: "in_review",
+                status: initialArtifactStatus(a.kind),
                 updatedAt: now(),
               })
               .where(eq(artifacts.id, existing.id));
@@ -301,7 +302,7 @@ export async function applyActions(
               kind: a.kind,
               artifactKey,
               title: a.title,
-              status: "in_review",
+              status: initialArtifactStatus(a.kind),
               currentVersion: 1,
               createdByType: "agent",
               createdById: ctx.actorRole.id,

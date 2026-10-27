@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { canonicalArtifactKey } from "@devteam/domain";
+import { canonicalArtifactKey, initialArtifactStatus } from "@devteam/domain";
 
 describe("artifact identity", () => {
   test("PRD / acceptance criteria / design / plan are one document each", () => {
@@ -10,6 +10,17 @@ describe("artifact identity", () => {
     );
     expect(canonicalArtifactKey("design", "Team Pulse 技术设计 v1")).toBe("design");
     expect(canonicalArtifactKey("plan", "Team Pulse 实施计划 v1")).toBe("plan");
+  });
+
+  test("only product intent waits for the client", () => {
+    expect(initialArtifactStatus("prd")).toBe("in_review");
+    expect(initialArtifactStatus("acceptance_criteria")).toBe("in_review");
+    expect(initialArtifactStatus("design")).toBe("accepted");
+    expect(initialArtifactStatus("api_contract")).toBe("accepted");
+    expect(initialArtifactStatus("plan")).toBe("accepted");
+    expect(initialArtifactStatus("diff")).toBe("accepted");
+    expect(initialArtifactStatus("test_report")).toBe("accepted");
+    expect(initialArtifactStatus("spec_review")).toBe("accepted");
   });
 
   test("contracts with the same base title share a key", () => {
