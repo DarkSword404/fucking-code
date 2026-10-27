@@ -61,7 +61,7 @@ const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
-  const [pendingApprovals, pendingArtifacts, proposedDecisions, pendingTasks] = await Promise.all([
+  const [pendingApprovals, pendingArtifacts, pendingTasks] = await Promise.all([
     db
       .select({ id: approvals.id })
       .from(approvals)
@@ -71,11 +71,6 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       .select({ id: artifacts.id })
       .from(artifacts)
       .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")))
-      .limit(1),
-    db
-      .select({ id: decisions.id })
-      .from(decisions)
-      .where(and(eq(decisions.projectId, projectId), eq(decisions.status, "proposed")))
       .limit(1),
     db
       .select({ id: tasks.id })
@@ -88,10 +83,12 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       )
       .limit(1),
   ]);
+  // A proposed product decision is visible in the decision inbox but does not
+  // stop coding/testing. Only an explicit product approval or an in-review
+  // artifact blocks the queue.
   return (
     pendingApprovals.length > 0 ||
     pendingArtifacts.length > 0 ||
-    proposedDecisions.length > 0 ||
     pendingTasks.length > 0
   );
 }

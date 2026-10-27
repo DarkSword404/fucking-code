@@ -72,6 +72,14 @@ const ENGINEERING_MARKERS = [
   "撤销 token",
   "吊销 token",
   "健康检查",
+  "测试口径",
+  "测试结论",
+  "测试范围",
+  "测试计划",
+  "走查",
+  "人工走查",
+  "点击",
+  "复测",
 ];
 
 export function isEngineeringTopic(text: string): boolean {

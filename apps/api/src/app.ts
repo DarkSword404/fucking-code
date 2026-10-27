@@ -2126,7 +2126,8 @@ app.post("/api/v1/projects/:projectId/decisions/:decisionId/decide", async (c) =
     action: body.status,
     title: decision.title,
   });
-  await pauseAutoDevelopment(project.id, "decision");
+  // Resolving a decision must not stop the engineering queue. The scheduler
+  // self-heals any earlier pause on its next tick.
   return c.json(updated);
 });
 

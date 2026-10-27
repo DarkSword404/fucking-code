@@ -6,7 +6,7 @@ import {
   type WorkflowPhase,
 } from "@devteam/contracts";
 import { agentRuns, captureAcceptedSpec, getDb, insertMessage, latestArtifactContent, loadRoomBundle, messages, projects, type RoleRow, type RoomBundle } from "@devteam/db";
-import { STAGE_POLICIES, uuidv7, type ValidatedAgentAction } from "@devteam/domain";
+import { STAGE_POLICIES, isEngineeringTopic, uuidv7, type ValidatedAgentAction } from "@devteam/domain";
 import { applyActions, type EmitFn } from "./actions.js";
 import {
   buildAttentionPrompt,
@@ -65,10 +65,16 @@ function actionChips(actions: ValidatedAgentAction[]): Array<{ kind: string; lab
         chips.push({ kind: "artifact", label: `产物：${String(a.title ?? "")}` });
         break;
       case "propose_decision":
-        chips.push({ kind: "decision", label: `决策：${String(a.title ?? "")}` });
+        chips.push({
+          kind: "decision",
+          label: `${isEngineeringTopic(`${String(a.title ?? "")} ${String(a.rationale ?? "")}`) ? "内部决策" : "产品决策"}：${String(a.title ?? "")}`,
+        });
         break;
       case "request_approval":
-        chips.push({ kind: "approval", label: `待审批：${String(a.title ?? "")}` });
+        chips.push({
+          kind: "approval",
+          label: `${/^product/i.test(String(a.targetType ?? "")) ? "待产品审批" : "内部审批"}：${String(a.title ?? "")}`,
+        });
         break;
       case "remember":
         chips.push({ kind: "memory", label: `记忆候选：${String(a.title ?? "")}` });
@@ -718,10 +724,14 @@ export class Orchestrator {
           const askAction = actions.find((action) => action.type === "ask_user") as
             | { question?: string }
             | undefined;
-          const content =
-            askAction?.question &&
-            !result.text.includes(askAction.question) &&
-            !/[?？]/.test(result.text)
+          const engineeringAsk = Boolean(
+            askAction?.question && isEngineeringTopic(askAction.question),
+          );
+          const content = engineeringAsk
+            ? `${result.text.replace(askAction!.question!, "").trim()}\n\n（工程执行细节由团队内部决定，不需要甲方确认。）`.trim()
+            : askAction?.question &&
+                !result.text.includes(askAction.question) &&
+                !/[?？]/.test(result.text)
               ? `${result.text}\n\n${askAction.question}`
               : result.text;
           const messageId = uuidv7();
