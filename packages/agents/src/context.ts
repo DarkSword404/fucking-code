@@ -20,6 +20,10 @@ const ALIASES: Record<string, string> = {
   队长: "lead",
   security: "security",
   安全: "security",
+  devops: "devops",
+  ops: "devops",
+  运维: "devops",
+  部署: "devops",
 };
 
 export function normalizeMention(raw: string): string | null {

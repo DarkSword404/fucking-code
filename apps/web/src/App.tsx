@@ -19,6 +19,7 @@ import {
   leftWidth,
   loading,
   openDecisionInbox,
+  openPreview,
   pendingDecisionCount,
   projects,
   requestAdvance,
@@ -37,6 +38,7 @@ import {
   setSettingsOpen,
   settingsOpen,
   snapshot,
+  previewLoading,
   view,
 } from "./lib/store";
 import { Markdown } from "./lib/markdown";
@@ -195,6 +197,16 @@ function Workspace() {
             <PhaseBar current={snap()!.project.phase} />
             <button class="icon-btn" title="项目设置" onClick={openSettings}>
               ⚙
+            </button>
+          </Show>
+          <Show when={!isAdminView() && snap()?.project.repoPath}>
+            <button
+              class="btn"
+              disabled={previewLoading()}
+              onClick={() => void openPreview()}
+              title="启动项目预览并在新标签页打开"
+            >
+              {previewLoading() ? "启动预览…" : "预览"}
             </button>
           </Show>
           <Show when={pending() && !isAdminView()}>

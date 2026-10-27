@@ -43,6 +43,7 @@ export const [loading, setLoading] = createSignal(true);
 export const [sending, setSending] = createSignal(false);
 export const [thinking, setThinking] = createSignal<string[]>([]);
 export const [roomReading, setRoomReading] = createSignal(false);
+export const [activity, setActivity] = createSignal<Record<string, string>>({});
 export const [connected, setConnected] = createSignal(false);
 export const [error, setError] = createSignal<string | null>(null);
 export const [leftCollapsed, setLeftCollapsed] = createSignal(false);
@@ -58,6 +59,7 @@ export const [settingsOpen, setSettingsOpen] = createSignal(false);
 export const [decisionOpen, setDecisionOpen] = createSignal(false);
 export const [autoStartError, setAutoStartError] = createSignal<string | null>(null);
 export const [workingTaskId, setWorkingTaskId] = createSignal<string | null>(null);
+export const [previewLoading, setPreviewLoading] = createSignal(false);
 export const [turnParticipants, setTurnParticipants] = createSignal<string[] | null>(null);
 export interface PresenceUser {
   userId: string;
@@ -216,22 +218,39 @@ function handleEvent(event: WorkspaceEvent): void {
   if (event.type === EVENT_TYPES.runStatusChanged) {
     const kind = String(payload.kind ?? "");
     const name = String(payload.roleName ?? "");
+    const roleKey = String(payload.roleKey ?? name);
     if (kind !== "attention" && name) {
       if (payload.status === "running") {
         setThinking((prev) => (prev.includes(name) ? prev : [...prev, name]));
+        const reason = String(payload.reason ?? "").trim();
+        setActivity((prev) => ({ ...prev, [roleKey]: reason }));
       } else {
         setThinking((prev) => prev.filter((n) => n !== name));
+        setActivity((prev) => {
+          const next = { ...prev };
+          delete next[roleKey];
+          return next;
+        });
       }
+    }
+  }
+  if (event.type === EVENT_TYPES.agentAttention) {
+    const roleKey = String(payload.roleKey ?? "");
+    const reason = String(payload.reason ?? "").trim();
+    if (roleKey && reason) {
+      setActivity((prev) => ({ ...prev, [roleKey]: `正在判断：${reason}` }));
     }
   }
 
   if (event.type === EVENT_TYPES.orchestrationFinished) {
     setRoomReading(false);
     setThinking([]);
+    setActivity({});
   }
   if (event.type === EVENT_TYPES.orchestrationFailed) {
     setRoomReading(false);
     setThinking([]);
+    setActivity({});
     toast(String(payload.error ?? "Agent 运行失败"));
   }
   if (event.type === EVENT_TYPES.projectChanged) {
@@ -401,6 +420,8 @@ export async function loadProject(id: string): Promise<void> {
   lastPendingDecisionCount = 0;
   setThinking([]);
   setRoomReading(false);
+  setThinking([]);
+  setActivity({});
   setPresence([]);
   localStorage.setItem("devteam.project", id);
   try {
@@ -1054,6 +1075,24 @@ export async function toggleRoleInRoom(roleKey: string, inRoom: boolean): Promis
     await refreshSnapshot();
   } catch (err) {
     toast(messageOf(err));
+  }
+}
+
+export async function openPreview(): Promise<void> {
+  const id = currentId();
+  if (!id) return;
+  const win = window.open("about:blank", "_blank");
+  setPreviewLoading(true);
+  try {
+    const result = await api.startPreview(id);
+    if (win) win.location.href = result.url;
+    else window.open(result.url, "_blank", "noopener,noreferrer");
+    toast("项目预览已启动。");
+  } catch (err) {
+    win?.close();
+    toast(messageOf(err));
+  } finally {
+    setPreviewLoading(false);
   }
 }
 

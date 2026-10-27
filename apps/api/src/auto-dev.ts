@@ -620,7 +620,7 @@ async function autoMergeReviewedTask(input: {
         senderType: "system",
         senderName: "系统",
         type: "system_event",
-        content: `内部评审通过，已自动合并「${task.title}」到 ${merged.baseBranch}（${merged.commit.slice(0, 8)}）。`,
+        content: `内部评审通过，已自动合并「${task.title}」到 ${merged.baseBranch}（${merged.commit.slice(0, 8)}）。可以点顶部「预览」查看当前项目。`,
         metadata: {
           kind: "internal_merge",
           taskId: task.id,

@@ -98,6 +98,13 @@ import { joinPresence, leavePresence, listPresence, touchPresence } from "./pres
 import { createPullRequest } from "./github.js";
 import { createProjectForUser } from "./provision.js";
 import { buildSnapshot, roomFor } from "./snapshot.js";
+import {
+  previewForToken,
+  rewritePreviewHtml,
+  rewritePreviewText,
+  startPreview,
+  stopPreview,
+} from "./preview.js";
 
 const app = new Hono<AppEnv>();
 
@@ -2286,6 +2293,90 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     void nudgePhaseProposal(project.id, "approval_approved");
   }
   return c.json(updated);
+});
+
+// ---------------------------------------------------------------------------
+// Project preview
+// ---------------------------------------------------------------------------
+
+app.post("/api/v1/projects/:projectId/preview", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  if (!project.repoPath) {
+    throw new HttpError(400, "REPO_NOT_CONFIGURED", "项目还没有配置仓库路径。");
+  }
+  try {
+    const preview = await startPreview(project.id, project.repoPath);
+    return c.json(preview);
+  } catch (error) {
+    throw new HttpError(
+      409,
+      "PREVIEW_START_FAILED",
+      `项目预览启动失败：${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+});
+
+app.delete("/api/v1/projects/:projectId/preview", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  stopPreview(project.id);
+  return c.json({ ok: true });
+});
+
+app.all("/preview/:token/*", async (c) => {
+  const token = c.req.param("token");
+  const preview = previewForToken(token);
+  if (!preview) throw new HttpError(404, "PREVIEW_NOT_FOUND", "预览不存在或已停止。");
+  const prefix = `/preview/${token}`;
+  const pathname = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : "/";
+  const upstreamPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("host");
+  headers.delete("content-length");
+  headers.delete("accept-encoding");
+  const init: RequestInit = { method: c.req.method, headers, redirect: "manual" };
+  if (!["GET", "HEAD"].includes(c.req.method)) {
+    init.body = await c.req.arrayBuffer();
+  }
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${preview.port}${upstreamPath}${new URL(c.req.url).search}`, init);
+  } catch (error) {
+    throw new HttpError(
+      502,
+      "PREVIEW_UPSTREAM_FAILED",
+      `预览服务不可用：${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const type = response.headers.get("content-type") ?? "";
+  let body: BodyInit | null = await response.arrayBuffer();
+  if (type.includes("text/html") || type.includes("text/css") || type.includes("javascript")) {
+    let text = Buffer.from(body as ArrayBuffer).toString("utf8");
+    text = type.includes("text/html")
+      ? rewritePreviewHtml(text, token)
+      : rewritePreviewText(text, token);
+    if (type.includes("text/html")) {
+      const patch = `<script>(()=>{const p="/preview/${token}";const a=history.pushState,b=history.replaceState;history.pushState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return a.call(this,s,t,u)};history.replaceState=function(s,t,u){if(typeof u==="string"&&u.startsWith("/")&&!u.startsWith(p))u=p+u;return b.call(this,s,t,u)}})();</script>`;
+      text = text.replace(/<head([^>]*)>/i, `<head$1>${patch}`);
+    }
+    body = text;
+  }
+  const outHeaders = new Headers(response.headers);
+  outHeaders.delete("content-length");
+  outHeaders.delete("content-encoding");
+  const location = outHeaders.get("location");
+  if (location?.startsWith("/")) outHeaders.set("location", `${prefix}${location}`);
+  const cookies = response.headers.getSetCookie?.() ?? [];
+  if (cookies.length) {
+    outHeaders.delete("set-cookie");
+    for (const cookie of cookies) {
+      outHeaders.append("set-cookie", cookie.replace(/Path=\/(;|$)/i, `Path=${prefix}/$1`));
+    }
+  }
+  return new Response(body, { status: response.status, headers: outHeaders });
+});
+
+app.get("/preview/:token", async (c) => {
+  return c.redirect(`/preview/${c.req.param("token")}/`);
 });
 
 // ---------------------------------------------------------------------------

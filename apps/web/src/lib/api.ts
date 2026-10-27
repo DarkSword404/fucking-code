@@ -350,6 +350,10 @@ export const api = {
       pullRequest: { url: string; number: number } | null;
       warning: string | null;
     }>(`/workspaces/${workspaceId}/pull-request`, { method: "POST" }),
+  startPreview: (projectId: string) =>
+    request<{ url: string; port: number }>(`/projects/${projectId}/preview`, { method: "POST" }),
+  stopPreview: (projectId: string) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/preview`, { method: "DELETE" }),
   projectWorkspaces: (projectId: string) =>
     request<{ items: WorkspaceItem[] }>(`/projects/${projectId}/workspaces`),
   repoFiles: (projectId: string) =>

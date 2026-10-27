@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { Message, TurnSummary } from "@devteam/contracts";
 import {
+  activity,
   canEditCurrentProject,
   messages,
   openArtifact,
@@ -344,7 +345,15 @@ export function ChatView() {
                 <i />
                 <i />
               </div>
-              {thinking().length ? `${thinking().join("、")} 正在回复…` : "团队正在阅读…"}
+              {thinking().length
+                ? thinking()
+                    .map((name) => {
+                      const role = snapshot()?.roles.find((r) => r.displayName === name);
+                      const detail = role ? activity()[role.key] : "";
+                      return detail ? `${name}：${detail}` : `${name} 正在回复…`;
+                    })
+                    .join("；")
+                : "团队正在阅读…"}
             </div>
           </Show>
         </div>

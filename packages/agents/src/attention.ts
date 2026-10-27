@@ -31,6 +31,7 @@ const ROLE_KEYWORDS: Record<string, RegExp> = {
   backend: /后端|api|数据库|服务|事务|幂等|迁移|队列|缓存/i,
   qa: /测试|质量|用例|回归|缺陷|验证|覆盖|边界/i,
   security: /安全|权限|越权|密钥|漏洞|注入|xss|csrf|供应链/i,
+  devops: /部署|运维|发布|回滚|环境|容器|docker|k8s|nginx|监控|日志|预览|健康检查/i,
   lead: /计划|拆解|拆任务|排期|推进|阻塞|协调|依赖|谁来做/i,
 };
 

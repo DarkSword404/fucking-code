@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
+import { WorkforcePanel } from "./WorkforcePanel";
 import { PHASE_LABELS } from "@devteam/contracts";
 import {
   authUser,
@@ -157,6 +158,8 @@ export function Sidebar() {
           </Show>
         </Show>
       </div>
+
+      <WorkforcePanel />
 
       <div class="sidebar-foot">
         <span class={`conn-dot ${connected() ? "on" : ""}`} />

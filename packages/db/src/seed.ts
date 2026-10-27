@@ -1,4 +1,4 @@
-import { DEFAULT_ROLES } from "@devteam/domain";
+import { DEFAULT_ROLES, uuidv7 } from "@devteam/domain";
 import { getClient } from "./client.js";
 
 export const DEV_IDS = {
@@ -93,6 +93,31 @@ export async function seed(): Promise<void> {
         role.sortOrder,
       ],
     );
+  }
+
+  // Existing projects may predate newly added built-in roles (for example
+  // DevOps). Backfill all projects idempotently on startup.
+  const allProjects = await c.query<{ id: string }>(`SELECT id FROM projects`);
+  for (const project of allProjects.rows) {
+    for (const role of DEFAULT_ROLES) {
+      await c.query(
+        `INSERT INTO agent_roles
+           (id, project_id, key, display_name, description, system_prompt, color, capabilities, sort_order, enabled)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, TRUE)
+         ON CONFLICT (project_id, key) DO NOTHING`,
+        [
+          uuidv7(),
+          project.id,
+          role.key,
+          role.displayName,
+          role.description,
+          role.systemPrompt,
+          role.color,
+          JSON.stringify(role.capabilities),
+          role.sortOrder,
+        ],
+      );
+    }
   }
 
   const count = await c.query<{ n: number }>(
