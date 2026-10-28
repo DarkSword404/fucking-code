@@ -232,6 +232,38 @@ git -c http.extraHeader="Authorization: Bearer <session-token>" \
 - 推送仍走任务/评审/合并流程，不能绕过门禁直接改主分支。
 - mirror 位于 `PROJECT_GIT_ROOT`（默认 `data/git`），每次请求前从项目仓库同步分支和标签。
 
+### 生产部署（Caddy）
+
+仓库提供单机生产模板：
+
+```bash
+cp .env.example .env
+# 至少设置：
+#   PUBLIC_BASE_URL=https://dev.example.com
+#   APP_DOMAIN=dev.example.com
+#   AUTH_MODE=session
+#   COOKIE_SECURE=true
+#   MODEL_GATEWAY=opencode
+#   OPENCODE_URL=http://host.docker.internal:49374
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+它包含：
+
+- `app`：只在内网监听 8787，数据放在 `app-data` 持久卷的 `/data`；
+- `caddy`：自动 HTTPS、反向代理、SSE 不缓冲、基础安全头；
+- 健康检查、`restart: unless-stopped`、优雅停止；
+- 默认 `RUNNER_MODE=host`，因为默认镜像只装 git/CA；要用 Docker runner，需要自定义镜像加 docker CLI/Chrome，并打开 compose 里的 socket 挂载和 `PROD_RUNNER_MODE=docker`。
+
+容器内 workbench 浏览器也需要镜像里有 Chrome/Chromium，并设置 `BROWSER_EXECUTABLE_PATH`；没有浏览器时 UI 走查会明确标「未覆盖」。
+
+数据备份：
+
+```bash
+tsx scripts/backup.ts
+# 或直接备份 app-data 卷
+```
+
 ### 两种 Agent 运行时
 
 ```env

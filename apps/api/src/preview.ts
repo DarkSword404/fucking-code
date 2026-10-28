@@ -97,7 +97,7 @@ async function waitForServer(
 
 const STATIC_SERVER = [
   "const h=require('node:http'),f=require('node:fs'),p=require('node:path');",
-  "const r='/workspace';",
+  "const r=process.env.REPO_PATH||'/workspace';",
   "const t={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.json':'application/json'};",
   "h.createServer((q,s)=>{let u=decodeURIComponent((q.url||'/').split('?')[0]);if(u.endsWith('/'))u+='index.html';",
   "let x=p.join(r,'public',u);if(!x.startsWith(p.join(r,'public')))return s.end();",
@@ -119,6 +119,8 @@ function startDockerPreview(input: {
   const image = process.env.PREVIEW_IMAGE?.trim() || defaultRunnerImage(input.repoPath);
   const dockerBin = process.env.DOCKER_BIN ?? "docker";
   const container = `fc-preview-${randomBytes(6).toString("hex")}`;
+  const volumesFrom =
+    process.env.PREVIEW_VOLUMES_FROM?.trim() || process.env.RUNNER_VOLUMES_FROM?.trim();
   const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
   const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
   const command = input.script
@@ -158,15 +160,17 @@ function startDockerPreview(input: {
     "BROWSER=none",
     "-e",
     "NODE_ENV=development",
-    "-v",
-    `${input.repoPath}:/workspace:rw`,
-    "-w",
-    "/workspace",
+    "-e",
+    `REPO_PATH=${input.repoPath}`,
     "-p",
     `127.0.0.1:${input.port}:${input.port}`,
-    image,
-    ...command,
   ];
+  if (volumesFrom) {
+    args.push("--volumes-from", volumesFrom, "-w", input.repoPath);
+  } else {
+    args.push("-v", `${input.repoPath}:/workspace:rw`, "-w", "/workspace");
+  }
+  args.push(image, ...command);
   const run = spawnSync(dockerBin, args, { encoding: "utf8", timeout: 30_000 });
   if (run.status !== 0) {
     throw new Error(

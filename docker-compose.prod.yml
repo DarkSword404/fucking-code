@@ -1,0 +1,77 @@
+name: fucking-code
+
+services:
+  app:
+    build: .
+    container_name: fucking-code
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      PGDATA: /data/pg
+      WORKSPACE_ROOT: /data/worktrees
+      PROJECT_REPO_ROOT: /data/repos
+      PROJECT_GIT_ROOT: /data/git
+      DEMO_REPO_ROOT: /data/repos
+      ALLOWED_REPO_ROOTS: /data/repos:/data/git
+      # Host mode works with the default image. For container-isolated tests,
+      # build an image with docker CLI + Chrome, then switch to:
+      #   RUNNER_MODE=docker
+      #   RUNNER_VOLUMES_FROM=fucking-code
+      # and mount /var/run/docker.sock below.
+      RUNNER_MODE: ${PROD_RUNNER_MODE:-host}
+      PREVIEW_MODE: host
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-node:22-bookworm-slim}
+      # BROWSER_EXECUTABLE_PATH: /usr/bin/chromium
+      OPENCODE_URL: ${OPENCODE_URL:-http://host.docker.internal:49374}
+      WEB_ORIGIN: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      COOKIE_SECURE: "true"
+    volumes:
+      - app-data:/data
+      # Uncomment together with RUNNER_MODE=docker:
+      # - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/v1/auth/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fucking-code-caddy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:

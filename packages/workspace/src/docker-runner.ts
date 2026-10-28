@@ -48,6 +48,8 @@ export async function dockerRunCommand(input: DockerRunInput): Promise<CommandRe
   const image = defaultRunnerImage(input.root);
   const dockerBin = process.env.DOCKER_BIN ?? "docker";
   const name = `fc-run-${randomBytes(6).toString("hex")}`;
+  const volumesFrom = process.env.RUNNER_VOLUMES_FROM?.trim();
+  const workdir = volumesFrom ? input.root : "/workspace";
   const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
   const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
 
@@ -90,14 +92,13 @@ export async function dockerRunCommand(input: DockerRunInput): Promise<CommandRe
     "NODE_ENV=test",
     "-e",
     "CI=1",
-    "-v",
-    `${input.root}:/workspace:rw`,
-    "-w",
-    "/workspace",
-    image,
-    input.bin,
-    ...input.args,
   ];
+  if (volumesFrom) {
+    args.push("--volumes-from", volumesFrom, "-w", workdir);
+  } else {
+    args.push("-v", `${input.root}:/workspace:rw`, "-w", "/workspace");
+  }
+  args.push(image, input.bin, ...input.args);
 
   return new Promise<CommandResult>((resolvePromise) => {
     const child = spawn(dockerBin, args, {
