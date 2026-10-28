@@ -66,24 +66,44 @@ Fucking Code 是一个以共享聊天室为核心的 AI 研发工作台。你以
 
 ### 依赖
 
-- Node.js 22+
+- Node.js 22.13+
 - Git
-- 一个正在运行的 OpenCode V2 服务（可选；不装也能用 mock 模式）
+- bubblewrap（`SANDBOX_MODE=bwrap` 时需要）
+- OpenCode V2 CLI + 已登录账号（使用 `MODEL_GATEWAY=opencode` 时）
+- Chromium/Chrome（workbench 浏览器走查需要，可选）
 
 ### 启动
 
-最简单的方式：
+本机：
 
 ```sh
 ./start.sh
 ```
 
-它会检查 Node 版本、首次安装依赖、从 `.env.example` 复制 `.env`、构建前端并启动；打开 <http://127.0.0.1:8787>。需要热更新时用 `./start.sh --dev`，打开 <http://127.0.0.1:5174>。
+新服务器一键安装：
+
+```sh
+./scripts/install-server.sh --url=https://dev.example.com
+# 或先检查缺什么
+./start.sh --doctor
+```
+
+它会安装系统依赖、Node、OpenCode、Chromium，创建 `.env`，同步 OpenCode 实际端口，初始化管理员账号并构建前端。完整步骤和 OpenCode 登录迁移见 [服务器部署](docs/deploy/server.md)。
+
+`start.sh` 会自动检查 Node 版本、首次安装依赖、从 `.env.example` 复制 `.env`、检测 OpenCode 服务与登录、构建前端并启动。打开 <http://127.0.0.1:8787>。需要热更新时用 `./start.sh --dev`，打开 <http://127.0.0.1:5174>。
+
+服务器模式：
+
+```sh
+./start.sh --server --url=https://dev.example.com
+```
+
+会设置 `HOST=0.0.0.0`、`WEB_ORIGIN`、`PUBLIC_BASE_URL` 和 `COOKIE_SECURE`。
 
 也可以手动启动：
 
 ```sh
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```
@@ -496,6 +516,7 @@ POST /tasks/:id/work
 ## 9. 相关文档
 
 - [产品介绍](docs/product/fucking-code.md)
+- [服务器部署与 OpenCode 登录迁移](docs/deploy/server.md)
 - [设计论文：聊天室即组织](docs/paper/fucking-code-design-paper.md)
 - [工程基线](docs/product/fucking-code-design.md)
 - [ADR-0001：OpenCode Runtime 与事件游标](docs/adr/0001-opencode-runtime.md)

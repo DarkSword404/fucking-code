@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Install the optional browser toolchain used by QA/Security/DevOps workbenches.
+# Install the Chromium used by builtin workbench tasks.
 #
-# It does two things:
-#   1. downloads a headless Chromium for Playwright;
-#   2. registers the Playwright MCP server with OpenCode.
+# Builtin workbench uses playwright-core directly; it does NOT need the OpenCode
+# Playwright MCP. Run this once on the machine that hosts Fucking Code.
 #
-# Run it once on the machine that hosts Fucking Code. It is safe to re-run.
-# If OpenCode is already running, restart its service afterwards so it picks up
-# the new MCP server.
+#   ./scripts/install-agent-browser.sh
 #
-# If Playwright's CDN is slow or blocked, set a mirror before running:
-#   PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
-#     ./scripts/install-agent-browser.sh
+# If the browser cannot start because shared libraries are missing:
+#   sudo npx -y playwright@1.64.1 install-deps chromium
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,7 +20,6 @@ fail() { printf '\033[1;31m[fucking-code]\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required."
 command -v npx >/dev/null 2>&1 || fail "npx is required."
-command -v opencode >/dev/null 2>&1 || fail "The OpenCode CLI is required (opencode)."
 
 if [ -z "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ] && command -v curl >/dev/null 2>&1; then
   if ! curl -sI --max-time 6 https://cdn.playwright.dev/ >/dev/null 2>&1; then
@@ -34,25 +29,21 @@ if [ -z "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ] && command -v curl >/dev/null 2>&1; th
 fi
 
 say "Installing Chromium for Playwright ${PLAYWRIGHT_VERSION}…"
-# Browser-only first: this does not need root. If the host is missing shared
-# libraries, run the printed install-deps command once with sudo.
 npx -y "playwright@${PLAYWRIGHT_VERSION}" install chromium
-# Playwright MCP defaults to the Chrome channel, so install Chrome too; the
-# workbench can always fall back to the Chromium binary.
-say "Installing Google Chrome for the Playwright MCP server…"
-npx -y "playwright@${PLAYWRIGHT_VERSION}" install chrome || \
-  warn "Chrome install failed; MCP will need --browser chrome with a system Chrome."
-warn "If Chromium/Chrome cannot start, install system libraries once with:"
-warn "  sudo npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium"
 
-if opencode mcp list 2>/dev/null | grep -qi playwright; then
-  say "Playwright MCP is already registered."
-else
-  say "Registering Playwright MCP with OpenCode (global config)…"
-  opencode mcp add --global playwright -- npx -y @playwright/mcp@latest
+if node -e "require.resolve('playwright-core')" >/dev/null 2>&1; then
+  BROWSER_PATH="$(node -e "const {chromium}=require('playwright-core'); console.log(chromium.executablePath())" 2>/dev/null || true)"
+  if [ -n "$BROWSER_PATH" ] && [ -x "$BROWSER_PATH" ]; then
+    say "Chromium: $BROWSER_PATH"
+    say "Builtin workbench auto-detects this path; no env var required."
+  fi
 fi
 
-say "Current MCP servers:"
-opencode mcp list || true
+if command -v google-chrome >/dev/null 2>&1; then
+  say "System Google Chrome: $(command -v google-chrome)"
+elif command -v chromium >/dev/null 2>&1; then
+  say "System Chromium: $(command -v chromium)"
+fi
 
-warn "If OpenCode was already running, restart it so workbench sessions see the browser tools."
+warn "If Chromium cannot start, install shared libraries once with:"
+warn "  sudo npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium"

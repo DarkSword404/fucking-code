@@ -4,6 +4,7 @@ data/
 .env
 .env.local
 demo.env
+opencode-auth*.json
 *.log
 .DS_Store
 coverage/
