@@ -38,6 +38,7 @@ fail() { printf '\033[1;31m[fucking-code]\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required. Install Node.js 22.13+ first."
 command -v npm >/dev/null 2>&1 || fail "npm is required."
+command -v git >/dev/null 2>&1 || fail "git is required. Install git (or use the provided Docker image)."
 
 if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)'; then
   fail "Node.js $(node -v) is too old; Fucking Code needs Node.js 22.13+."
