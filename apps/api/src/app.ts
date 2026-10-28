@@ -98,6 +98,7 @@ import { hashPassword, safeEqual, verifyPassword } from "./password.js";
 import { joinPresence, leavePresence, listPresence, touchPresence } from "./presence.js";
 import { createPullRequest } from "./github.js";
 import { createProjectForUser } from "./provision.js";
+import { buildProjectPackage } from "./export.js";
 import { buildSnapshot, roomFor } from "./snapshot.js";
 import {
   previewForToken,
@@ -2607,6 +2608,43 @@ app.get("/api/v1/projects/:projectId/repo/file", async (c) => {
       400,
       "REPO_PATH_INVALID",
       `仓库路径不可用：${error instanceof Error ? error.message : String(error)}。请在项目设置中修正。`,
+    );
+  }
+});
+
+app.get("/api/v1/projects/:projectId/export", async (c) => {
+  if (isDemoMode()) {
+    throw new HttpError(403, "DEMO_MODE", "Project export is disabled in demo mode.");
+  }
+  const { project } = await requireProject(c);
+  if (!project.repoPath) {
+    throw new HttpError(400, "REPO_NOT_CONFIGURED", "This project has no repository path.");
+  }
+  try {
+    const pkg = await buildProjectPackage(project.id);
+    const bytes = new Uint8Array(pkg.buffer.byteLength);
+    bytes.set(pkg.buffer);
+    await audit({
+      tenantId: project.tenantId,
+      projectId: project.id,
+      actorType: "user",
+      actorId: c.get("user").id,
+      action: "project.exported",
+      targetType: "project",
+      targetId: project.id,
+      detail: { filename: pkg.filename, bytes: pkg.buffer.length },
+    });
+    return c.body(bytes, 200, {
+      "content-type": "application/gzip",
+      "content-disposition": `attachment; filename="${pkg.filename}"`,
+      "content-length": String(pkg.buffer.length),
+      "cache-control": "no-store",
+    });
+  } catch (error) {
+    throw new HttpError(
+      500,
+      "EXPORT_FAILED",
+      `导出失败：${error instanceof Error ? error.message : String(error)}`,
     );
   }
 });

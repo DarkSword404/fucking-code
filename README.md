@@ -183,6 +183,27 @@ PREVIEW_TTL_MS=1800000
 
 预览容器只发布到 `127.0.0.1`，默认 30 分钟 TTL，退出或超时会自动删除；仍使用同一个 worktree 挂载和资源限制。需要数据库或外部服务的项目仍建议先用 `PREVIEW_MODE=host`。
 
+### 一键迁移包
+
+代码页右上角的「导出迁移包」会下载一个 tar.gz：
+
+- `repo.bundle`：`git bundle --all`，包含所有分支和标签；
+- `manifest.json`：项目阶段、HEAD、bundle SHA-256、任务和产物索引；
+- `artifacts.md`：当前版本的 PRD、验收标准、设计、测试报告等；
+- `env.example` / `docker-compose.yml` / `Dockerfile`：仓库里已有的部署文件；
+- `README.md`：恢复和校验步骤。
+
+不会复制 `.env`、密钥、数据库或 worktree。恢复：
+
+```bash
+git clone repo.bundle app
+cd app
+git remote set-url origin <新仓库地址>
+git push -u origin --all && git push --tags
+```
+
+对应 API：`GET /api/v1/projects/:projectId/export`。
+
 ### 两种 Agent 运行时
 
 ```env

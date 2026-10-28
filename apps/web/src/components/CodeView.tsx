@@ -24,6 +24,7 @@ import {
   selectedFileContent,
   selectedFilePath,
   snapshot,
+  toast,
   verifyCodeWorkspace,
   workspaces,
 } from "../lib/store";
@@ -150,6 +151,7 @@ export function CodeView() {
   const [commandOutput, setCommandOutput] = createSignal("");
   const [commandStatus, setCommandStatus] = createSignal("");
   const [commandRunning, setCommandRunning] = createSignal(false);
+  const [exporting, setExporting] = createSignal(false);
 
   onMount(() => {
     if (!codeFiles().length) void loadCodeView();
@@ -180,6 +182,42 @@ export function CodeView() {
     const ok = await saveCodeFile(path, editContent());
     setSaving(false);
     if (ok) setEditing(false);
+  };
+
+  const exportProject = async () => {
+    const projectId = snapshot()?.project.id;
+    if (!projectId) return;
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/v1/projects/${projectId}/export`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: { message?: string } }
+          | null;
+        toast(payload?.error?.message ?? "导出失败");
+        return;
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename =
+        /filename="([^"]+)"/.exec(disposition)?.[1] ??
+        `project-${projectId.slice(0, 8)}.tar.gz`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast("迁移包已开始下载");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const runCommand = async () => {
@@ -315,6 +353,17 @@ export function CodeView() {
               ? `${parsedDiff().files.length} 个文件变更`
               : selectedFilePath() ?? (codeSource() === "repo" ? "仓库" : "工作区")}
           </span>
+          <Show when={snapshot()?.project}>
+            <button
+              class="btn"
+              style={{ padding: "3px 9px", "font-size": "11px" }}
+              disabled={exporting()}
+              title="打包 Git bundle、产物、任务清单和环境模板"
+              onClick={() => void exportProject()}
+            >
+              {exporting() ? "打包中…" : "导出迁移包"}
+            </button>
+          </Show>
           <Show
             when={
               canEditCurrentProject() &&
