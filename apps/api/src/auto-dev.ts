@@ -248,8 +248,8 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     const content = [
       "阶段门禁已经满足。",
       `当前阶段：${PHASE_LABELS[from]}；可提议的下一阶段：${PHASE_LABELS[next]}。`,
-      "请在团队内部判断是否推进：如果证据足够，用 request_phase 发起内部阶段推进并说明理由；服务端校验门禁后会直接切换阶段，不需要甲方确认。如果还不该推进，就直接说明原因。",
-      "不要创建产物、任务、审批或修改任务状态；只允许发起一个阶段提议。",
+      "请在团队内部判断是否推进：如果证据足够，用 request_phase 发起内部阶段推进；服务端校验门禁后会直接切换阶段，不需要甲方确认。",
+      "如果还不该推进，不要只停在“不推进”：请用 create_task 创建缺失的 workbench/任务（先检查现有任务，避免重复），或明确指出已有任务。可以创建任务，但不要修改已完成任务或审批，也不要询问甲方。",
     ].join("\n");
     await insertMessage({
       id: messageId,
@@ -290,7 +290,7 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
             participantKeys: ["lead"],
             userName: "系统",
             triggerLabel: "系统（阶段门禁）",
-            phaseOnly: true,
+            phaseOnly: false,
             userId: project.tenantId,
             signal,
           });
