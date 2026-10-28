@@ -918,6 +918,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
   const modelId = role.modelId ?? process.env.AGENT_MODEL_ID ?? "deepseek-v4.1-flash";
   const runId = uuidv7();
 
+  const initialKind = task.mode === "workbench" ? "verify" : "code";
   await db.insert(agentRuns).values({
     id: runId,
     projectId: project.id,
@@ -928,14 +929,14 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     startedAt: new Date(),
     modelProvider: provider,
     modelId,
-    metadata: { kind: "code", taskId: task.id, workspaceId: workspace.id },
+    metadata: { kind: initialKind, taskId: task.id, workspaceId: workspace.id },
   });
   await input.emit(EVENT_TYPES.runStatusChanged, {
     runId,
     roleKey: role.key,
     roleName: role.displayName,
     status: "running",
-    kind: "code",
+    kind: initialKind,
     taskId: task.id,
   });
 
