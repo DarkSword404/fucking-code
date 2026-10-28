@@ -104,9 +104,15 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
     if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
 
     lastTriageNudge.set(projectId, Date.now());
-    const lines = stuck.slice(0, 8).map(
-      (task) => `- [${task.status}] ${task.title}：${(task.blockedReason ?? "无原因").slice(0, 220)}`,
-    );
+    const lines = stuck.slice(0, 8).map((task) => {
+      const phaseBlocked = task.status === "ready" && task.mode !== "workbench";
+      const reason = phaseBlocked
+        ? `当前阶段 ${project.phase} 只自动执行 workbench；这条 code 任务需要退回 coding 或取消`
+        : task.status === "ready"
+          ? "依赖未满足，调度器无法启动；请拆单、取消依赖或调整顺序"
+          : (task.blockedReason ?? "无原因");
+      return `- [${task.status}] ${task.title}：${reason.slice(0, 220)}`;
+    });
     const content = [
       "编码队列当前没有 ready 任务，但有任务卡住：",
       ...lines,
@@ -817,50 +823,31 @@ async function enqueueTaskWork(
           }
           return;
         }
-        pausedProjects.add(project.id);
-        const [currentProject] = await getDb()
-          .select({ autoStartTasks: projects.autoStartTasks })
-          .from(projects)
-          .where(eq(projects.id, project.id))
+        const [room] = await getDb()
+          .select()
+          .from(rooms)
+          .where(eq(rooms.projectId, project.id))
           .limit(1);
-        // A task may have been started manually while auto development was on,
-        // or auto may have been enabled during the run. Pause must follow the
-        // current project switch, not the stale options.auto value.
-        if (currentProject?.autoStartTasks) {
-          await getDb()
-            .update(projects)
-            .set({ autoStartTasks: false, updatedAt: new Date() })
-            .where(eq(projects.id, project.id));
-          await emit(EVENT_TYPES.projectChanged, {
-            action: "auto_paused",
-            reason: "task_failed",
+        if (room) {
+          const messageId = uuidv7();
+          await insertMessage({
+            id: messageId,
+            tenantId: project.tenantId,
+            projectId: project.id,
+            roomId: room.id,
+            senderType: "system",
+            senderName: "系统",
+            type: "system_event",
+            content: `任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}，已挂起；自动开发保持开启。Lead 会收到内部分诊提示，决定返工/取消/拆分，不需要甲方处理。`,
+            metadata: { kind: "task_parked", taskId: task.id, needsTriage: true },
           });
-          const [room] = await getDb()
-            .select()
-            .from(rooms)
-            .where(eq(rooms.projectId, project.id))
-            .limit(1);
-          if (room) {
-            const messageId = uuidv7();
-            await insertMessage({
-              id: messageId,
-              tenantId: project.tenantId,
-              projectId: project.id,
-              roomId: room.id,
-              senderType: "system",
-              senderName: "系统",
-              type: "system_event",
-              content: `自动开发已暂停：任务《${task.title}》${fresh?.status === "blocked" ? "被阻塞" : "失败"}，且没有其他可执行任务。修正问题并重新开启自动开发后再继续。`,
-              metadata: { kind: "auto_paused", taskId: task.id },
-            });
-            await emit(EVENT_TYPES.messageCreated, {
-              messageId,
-              roomId: room.id,
-              senderType: "system",
-              senderName: "系统",
-              type: "system_event",
-            });
-          }
+          await emit(EVENT_TYPES.messageCreated, {
+            messageId,
+            roomId: room.id,
+            senderType: "system",
+            senderName: "系统",
+            type: "system_event",
+          });
         }
       }
       if (options.auto && !waitingForUser && !failed) {
@@ -1072,7 +1059,7 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
  * idempotent; the periodic loop and event hooks may both call it.
  */
 export async function autoStartNext(projectId: string): Promise<void> {
-  if (schedulerLocks.has(projectId) || pausedProjects.has(projectId) || startingProjects.has(projectId)) return;
+  if (schedulerLocks.has(projectId) || startingProjects.has(projectId)) return;
   schedulerLocks.add(projectId);
   try {
     const db = getDb();
@@ -1147,9 +1134,20 @@ export async function autoStartNext(projectId: string): Promise<void> {
       }
     }
     if (!candidate) {
-      const stuck = taskRows.filter((task) =>
-        ["failed", "blocked", "needs_replan", "stale"].includes(task.status),
+      const stuck = taskRows.filter(
+        (task) =>
+          ["failed", "blocked", "needs_replan", "stale"].includes(task.status) ||
+          // A ready code task in testing/deployment/operations can never be
+          // picked by the scheduler. Surface it for internal triage instead of
+          // silently leaving a non-empty queue that looks stuck.
+          (task.status === "ready" && project.phase !== "coding" && task.mode !== "workbench"),
       );
+      // A ready task whose dependencies are still blocked is also unrunnable.
+      for (const task of taskRows) {
+        if (task.status !== "ready" || stuck.includes(task)) continue;
+        if (project.phase !== "coding" && task.mode !== "workbench") continue;
+        if (!(await dependenciesMet(task.id))) stuck.push(task);
+      }
       if (stuck.length) {
         void nudgeStuckTasks(project.id, stuck);
         return;

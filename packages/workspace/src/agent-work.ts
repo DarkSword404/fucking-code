@@ -1026,18 +1026,34 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
     // worktree keeps the partial work, so retry once or twice instead of
     // parking the task in `blocked` where the scheduler would never pick it up.
     const timedOut = /timed out/i.test(message);
+    const infraUnavailable =
+      /session create failed \((401|403|5\d\d)\)|ECONNREFUSED|fetch failed|service unavailable/i.test(
+        message,
+      );
     const timeoutAttempts = Number(
       (task.evidence as Record<string, unknown> | null)?.["timeoutAttempts"] ?? 0,
     );
-    const retry = timedOut && timeoutAttempts < 2 && !task.title.startsWith("缺陷：");
+    const infraAttempts = Number(
+      (task.evidence as Record<string, unknown> | null)?.["infraAttempts"] ?? 0,
+    );
+    const timeoutRetry = timedOut && timeoutAttempts < 2 && !task.title.startsWith("缺陷：");
+    // A server restart or a short OpenCode outage is not a task failure. Keep
+    // the workspace and retry in the queue instead of parking it in blocked.
+    const infraRetry = infraUnavailable && infraAttempts < 3;
+    const retry = timeoutRetry || infraRetry;
+    const retryLabel = infraRetry
+      ? `OpenCode 暂不可用，自动重试第 ${infraAttempts + 1} 次`
+      : `代码任务超时，自动重试第 ${timeoutAttempts + 1} 次`;
     await db
       .update(tasks)
       .set({
         status: retry ? "ready" : "blocked",
-        blockedReason: retry
-          ? `代码任务超时，已保留工作区并自动重试（第 ${timeoutAttempts + 1} 次）`
-          : message.slice(0, 500),
-        evidence: { ...(task.evidence ?? {}), timeoutAttempts: timeoutAttempts + 1 },
+        blockedReason: retry ? retryLabel : message.slice(0, 500),
+        evidence: {
+          ...(task.evidence ?? {}),
+          timeoutAttempts: timeoutAttempts + (timeoutRetry ? 1 : 0),
+          infraAttempts: infraAttempts + (infraRetry ? 1 : 0),
+        },
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, task.id));
@@ -1050,7 +1066,7 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
       senderName: "系统",
       type: "system_event",
       content: retry
-        ? `${role.displayName} 的代码任务超时，已保留工作区改动，自动重试第 ${timeoutAttempts + 1} 次。`
+        ? `${role.displayName} 的代码任务${infraRetry ? "遇到 OpenCode 暂时不可用" : "超时"}，已保留工作区改动，${retryLabel}。`
         : `${role.displayName} 的代码任务没有跑完：${message.slice(0, 400)}`,
       metadata: { runId, taskId: task.id, workspaceId: workspace.id, sessionId, retry },
     });
