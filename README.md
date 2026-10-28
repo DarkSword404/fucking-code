@@ -105,26 +105,37 @@ npm run dev
 - **DevOps**：启动服务、健康检查、发布/回滚验证；
 - **Frontend/Backend**：需要只读复现或读代码时也可以申请 workbench。
 
-workbench 任务在隔离 Git worktree 中运行，拥有 shell、host 网络、文件读写，并产出验证报告；它不要求改业务代码。聊天里的成员不能声称自己点过页面——必须由 workbench 工位执行并回贴证据。
+workbench 任务在隔离 Git worktree 中运行，拥有 shell、host 网络、文件读写和浏览器，并产出验证报告；它不要求改业务代码。聊天里的成员不能声称自己点过页面——必须由 workbench 工位执行并回贴证据。
 
-浏览器工具是可选安装（Playwright + Chromium/Chrome + Playwright MCP）：
+workbench 默认也走内置执行器：
 
-```sh
-./start.sh --install-browser   # 只安装浏览器工具
-./start.sh --with-browser      # 安装后启动
+```env
+WORKBENCH_EXECUTOR=builtin
+WORKBENCH_MAX_STEPS=40
+# WORKBENCH_AGENT_TIMEOUT_MS=1800000
 ```
 
-安装后如果 OpenCode 已在运行，重启一次 OpenCode 服务，让新 MCP 生效。国内网络如果 Playwright CDN 很慢，可以先设置镜像：
+内置 Agent 的动作包括：
+
+- `run`：在 worktree 或 Docker 容器中执行测试/检查命令；
+- `fetch`：请求预览地址或项目 HTTP 接口；
+- `browser`：打开、快照、点击、填表、按键、截图、执行只读 JS；
+- `write`：只允许写 `docs/` 和 `qa-evidence/` 下的证据文件；
+- `done`：输出逐条结果、未覆盖项、复现步骤和剩余风险。
+
+浏览器由 `playwright-core` 驱动本机 Chrome/Chromium，不再依赖 OpenCode 的 Playwright MCP：
 
 ```sh
-PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright ./scripts/install-agent-browser.sh
+./start.sh --install-browser   # 安装 Chromium
+# 或指定系统浏览器
+BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
 ```
 
 没有浏览器时，workbench 仍可用 shell/HTTP 做接口级验证，但 UI 走查项必须标「未覆盖」。
 
 ### 模型网关与 OpenCode 解耦
 
-聊天、注意力和规格核对已经通过 `MODEL_GATEWAY` 访问模型，不再直接依赖 OpenCode session：
+聊天、注意力、规格核对、代码任务和 workbench 都已经通过 `MODEL_GATEWAY` 访问模型，不再创建 OpenCode session；OpenCode 只保留为推理网关。
 
 ```env
 # 复用本机 OpenCode 套餐作为推理网关
@@ -136,18 +147,21 @@ MODEL_API_BASE_URL=https://api.openai.com/v1
 MODEL_API_KEY=...
 ```
 
-代码任务已经切到内置执行器：Fucking Code 自己维护工具循环（列目录、读文件、写文件、跑命令），通过网关拿模型输出，不再创建 OpenCode session。
+代码任务执行器：
 
 ```env
-# 代码任务执行器：builtin = 自研工具循环；opencode = 旧的 OpenCode session
+# builtin = 自研工具循环；opencode = 旧的 OpenCode session（回退用）
 CODE_EXECUTOR=builtin
+WORKBENCH_EXECUTOR=builtin
 CODE_AGENT_MAX_STEPS=20
 # CODE_AGENT_TIMEOUT_MS=1200000
 ```
 
-已用一个临时项目验证：`npm test` 从失败到通过、规格核对通过、任务进入内部 review，过程中 OpenCode session 数量保持 0 增长。
+已用临时项目验证：
 
-尚未迁移：QA / 安全 / 部署 / 运维的 workbench 仍使用 OpenCode session 的浏览器与网络工具；这些任务暂时还需要 OpenCode。
+- 代码任务：`npm test` 从失败到通过、规格核对通过、任务进入 review；
+- workbench：HTTP 200、页面标题 `Workbench Home`、截图落盘 `docs/qa-evidence/`；
+- 两次运行 OpenCode session 数量都保持 0 增长。
 
 ### Docker 命令隔离
 
@@ -425,13 +439,13 @@ POST /tasks/:id/work
 
 ## 8. 路线图
 
-1. **容器沙箱**：当前测试/终端命令已用 bubblewrap 隔离；下一步是把编码 Agent 也放入 rootless 容器，并加 CPU/内存/磁盘配额。
+1. **容器沙箱**：测试/终端命令已可放进短生命周期 Docker 容器，预览也已支持容器 TTL；下一步是把编码 Agent 主进程也放入 rootless 容器。
 2. **GitHub App**：当前支持 Token 推送/PR；下一步是仓库授权、只读克隆和 PR 状态回写。
 3. **缺陷与回归**：测试失败会自动建缺陷任务；下一步是修复后自动回归验收。
 4. **长期记忆**：候选提取、审核、去重、注入和 180 天衰减已接；下一步是语义相似度合并与使用频率衰减。
 5. **真实 PostgreSQL + RLS**：把 PGlite 换成 `pg`，加行级安全和连接池。
 6. **身份与协作**：OAuth/SSO、presence、并发编辑提示。
-7. **流式聊天**：把讨论从一次性 generate 换成 OpenCode session 流式事件，降低首字延迟。
+7. **流式聊天**：把讨论从一次性网关调用换成流式输出，降低首字延迟。
 
 ## 9. 相关文档
 

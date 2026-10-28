@@ -698,8 +698,13 @@ async function runBuiltinTaskWork(input: {
   modelId: string;
   emit: EmitFn;
   signal?: AbortSignal;
+  previewUrl?: string;
+  seedUser?: string;
+  seedPassword?: string;
 }): Promise<void> {
   const db = getDb();
+  const isWorkbench = input.task.mode === "workbench";
+  const runKind = isWorkbench ? "verify" : "code";
   const memoryRows = await db
     .select()
     .from(memories)
@@ -725,16 +730,32 @@ async function runBuiltinTaskWork(input: {
     specText: input.specText,
     previousFailure: input.task.blockedReason ?? undefined,
     model: { providerID: input.provider, id: input.modelId },
+    mode: isWorkbench ? "workbench" : "code",
+    previewUrl: input.previewUrl,
+    seedUser: input.seedUser,
+    seedPassword: input.seedPassword,
+    allowNetwork: isWorkbench || process.env.CODE_TASK_NETWORK === "1",
+    maxSteps: Number(
+      isWorkbench ? process.env.WORKBENCH_MAX_STEPS ?? 40 : process.env.CODE_AGENT_MAX_STEPS ?? 20,
+    ),
+    timeoutMs: Number(
+      isWorkbench
+        ? process.env.WORKBENCH_AGENT_TIMEOUT_MS ??
+            process.env.WORKBENCH_TIMEOUT_MS ??
+            30 * 60_000
+        : process.env.CODE_AGENT_TIMEOUT_MS ?? 20 * 60_000,
+    ),
     signal: input.signal,
     onProgress: async (tool) => {
       await db
         .update(agentRuns)
         .set({
           metadata: {
-            kind: "code",
+            kind: runKind,
             taskId: input.task.id,
             workspaceId: input.workspace.id,
             executor: "builtin",
+            taskMode: input.task.mode,
             progress: tool,
           },
         })
@@ -744,7 +765,7 @@ async function runBuiltinTaskWork(input: {
         roleKey: input.role.key,
         roleName: input.role.displayName,
         status: "running",
-        kind: "code",
+        kind: runKind,
         taskId: input.task.id,
         progress: tool,
       });
@@ -754,7 +775,7 @@ async function runBuiltinTaskWork(input: {
   const testCommand = await detectTestCommand(input.workspace.path);
   const testResult = testCommand
     ? await runCommand(input.workspace.path, testCommand, 180_000, {
-        network: process.env.CODE_TASK_NETWORK === "1",
+        network: isWorkbench || process.env.CODE_TASK_NETWORK === "1",
       })
     : null;
   let testRunId: string | null = null;
@@ -772,16 +793,20 @@ async function runBuiltinTaskWork(input: {
     });
   }
 
-  const diff = await workspaceDiff(input.workspace.path, input.workspace.baseCommit);
-  const changed = (await workspaceChangedFiles(input.workspace.path, input.workspace.baseCommit)).map(
-    (file) => `${file.status} ${file.path}`,
-  );
+  const diff = isWorkbench
+    ? ""
+    : await workspaceDiff(input.workspace.path, input.workspace.baseCommit);
+  const changed = isWorkbench
+    ? []
+    : (await workspaceChangedFiles(input.workspace.path, input.workspace.baseCommit)).map(
+        (file) => `${file.status} ${file.path}`,
+      );
   const workspaceContext = `Changed files:\n${
     changed.length ? changed.join("\n") : "(none)"
   }\nAll other files are unchanged from the base commit.`;
 
   let verification: VerificationResult | null = null;
-  if (input.specText) {
+  if (input.specText && !isWorkbench) {
     try {
       verification = await verifyWork({
         taskTitle: input.task.title,
@@ -826,20 +851,24 @@ async function runBuiltinTaskWork(input: {
     outcome: agent.outcome,
     sessionId: null,
     toolCalls: agent.toolCalls,
-    info: { executor: "builtin", steps: agent.toolCalls },
+    info: { executor: "builtin", steps: agent.toolCalls, taskMode: input.task.mode },
     emit: input.emit,
-    mode: "code",
+    mode: isWorkbench ? "verify" : "code",
   });
   await db
     .update(agentRuns)
     .set({
-      status: agent.outcome === "succeeded" ? "succeeded" : "failed",
+      status:
+        agent.outcome === "succeeded" && (!testResult || testResult.status === "passed")
+          ? "succeeded"
+          : "failed",
       endedAt: new Date(),
       metadata: {
-        kind: "code",
+        kind: runKind,
         taskId: input.task.id,
         workspaceId: input.workspace.id,
         executor: "builtin",
+        taskMode: input.task.mode,
         outcome: agent.outcome,
         toolCalls: agent.toolCalls,
         testStatus: testResult?.status ?? "not_run",
@@ -924,10 +953,12 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
 
   let sessionId: string | null = null;
   try {
-    if (
-      (process.env.CODE_EXECUTOR ?? "opencode").toLowerCase() === "builtin" &&
-      task.mode !== "workbench"
-    ) {
+    const executor = (
+      task.mode === "workbench"
+        ? process.env.WORKBENCH_EXECUTOR ?? "builtin"
+        : process.env.CODE_EXECUTOR ?? "opencode"
+    ).toLowerCase();
+    if (executor === "builtin") {
       await runBuiltinTaskWork({
         project,
         task,
@@ -942,6 +973,9 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
         modelId,
         emit: input.emit,
         signal: input.signal,
+        previewUrl: input.previewUrl,
+        seedUser: input.seedUser,
+        seedPassword: input.seedPassword,
       });
       return;
     }
