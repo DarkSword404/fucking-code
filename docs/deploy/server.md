@@ -177,6 +177,13 @@ PREVIEW_MODE=host
 APP_INSTANCE_ID=fucking-code
 
 BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
+
+# 自动把合并后的主分支推送到项目 repoUrl
+# GitHub:
+GITHUB_TOKEN=
+# GitLab/Gitee/其他 HTTPS 远程:
+GIT_PUSH_TOKEN=
+GIT_PUSH_USERNAME=oauth2
 ```
 
 `OPENCODE_URL`、`OPENCODE_PASSWORD` 不要从旧服务器照抄。URL 由 `opencode service status` 决定；密码由 `~/.config/opencode/service.json` 生成。

@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { Orchestrator, opencodeFetch } from "@devteam/agents";
+import { syncProjectRepo } from "./repo-sync.js";
 import {
   EVENT_TYPES,
   PHASE_LABELS,
@@ -947,6 +948,10 @@ async function autoMergeReviewedTask(input: {
       .update(workspaces)
       .set({ status: "merged", updatedAt: new Date() })
       .where(eq(workspaces.id, workspace.id));
+
+    void syncProjectRepo(project.id).catch((error) => {
+      console.error("[auto-dev] project repo sync failed", error);
+    });
 
     const [room] = await db.select().from(rooms).where(eq(rooms.projectId, project.id)).limit(1);
     if (room) {

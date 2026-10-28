@@ -80,6 +80,15 @@ export interface AdminInvite {
   createdAt: string;
 }
 
+export interface RepoSyncResult {
+  pushed: boolean;
+  skipped: boolean;
+  commit: string | null;
+  branch: string;
+  remote: string | null;
+  error?: string;
+}
+
 export interface RepoTokenInfo {
   token: string;
   cloneUrl: string;
@@ -358,6 +367,8 @@ export const api = {
       pullRequest: { url: string; number: number } | null;
       warning: string | null;
     }>(`/workspaces/${workspaceId}/pull-request`, { method: "POST" }),
+  syncRepo: (projectId: string) =>
+    request<RepoSyncResult>(`/projects/${projectId}/repo/sync`, { method: "POST" }),
   createRepoToken: (projectId: string, name = "clone") =>
     request<RepoTokenInfo>(`/projects/${projectId}/repo/tokens`, {
       method: "POST",

@@ -172,6 +172,10 @@ export interface Project {
   status: string;
   repoUrl: string | null;
   repoPath: string | null;
+  repoSyncStatus?: string;
+  repoSyncError?: string | null;
+  repoSyncedAt?: string | null;
+  repoSyncedCommit?: string | null;
   defaultBranch: string;
   baseCommit: string | null;
   budgetCents: number;

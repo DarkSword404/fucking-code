@@ -249,9 +249,25 @@ git push -u origin --all && git push --tags
 
 对应 API：`GET /api/v1/projects/:projectId/export`。
 
-### Git 仓库托管
+### Git 仓库托管与自动推送
 
-每个项目会自动维护一个只读 bare mirror，可直接 `git clone` 到别的机器：
+给项目设置 `repoUrl` 后：
+
+- 内部评审合并完任务，主分支会自动推送到远程；
+- 代码页「推送远程」可以手动补推；
+- 推送状态和提交号记录在项目上，失败不会影响本地合并，但会显示错误。第一次点代码页「推送远程」时会提示输入 `repoUrl`，之后自动推送。
+
+支持 HTTPS Token：
+
+```env
+# GitHub
+GITHUB_TOKEN=github_pat_xxx
+# GitLab / Gitee / 其他 HTTPS 远程
+GIT_PUSH_TOKEN=
+GIT_PUSH_USERNAME=oauth2
+```
+
+只读 clone 仍然可用。每个项目会自动维护一个只读 bare mirror，可直接 `git clone` 到别的机器：
 
 代码页点「克隆地址」会生成一个只显示一次的只读 Token（默认 30 天），并给出可直接复制的命令：
 

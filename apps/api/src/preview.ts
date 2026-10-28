@@ -43,7 +43,7 @@ async function ensureDependencies(repoPath: string, hasPackage: boolean): Promis
   if (!hasPackage || existsSync(join(repoPath, "node_modules"))) return;
   const args = existsSync(join(repoPath, "package-lock.json"))
     ? ["ci", "--omit=dev", "--no-audit", "--no-fund"]
-    : ["install", "--omit=dev", "--no-audit", "--no-fund"];
+    : ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock"];
   const child = spawn("npm", args, {
     cwd: repoPath,
     env: { ...process.env, NODE_ENV: "development" },

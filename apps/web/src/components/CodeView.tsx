@@ -23,6 +23,7 @@ import {
   selectWorkspace,
   selectedFileContent,
   selectedFilePath,
+  setSnapshot,
   snapshot,
   toast,
   verifyCodeWorkspace,
@@ -154,6 +155,7 @@ export function CodeView() {
   const [exporting, setExporting] = createSignal(false);
   const [cloneInfo, setCloneInfo] = createSignal<RepoTokenInfo | null>(null);
   const [cloneLoading, setCloneLoading] = createSignal(false);
+  const [repoSyncing, setRepoSyncing] = createSignal(false);
 
   onMount(() => {
     if (!codeFiles().length) void loadCodeView();
@@ -184,6 +186,40 @@ export function CodeView() {
     const ok = await saveCodeFile(path, editContent());
     setSaving(false);
     if (ok) setEditing(false);
+  };
+
+  const pushRemoteRepo = async () => {
+    const project = snapshot()?.project;
+    if (!project) return;
+    let remote = project.repoUrl;
+    if (!remote) {
+      const entered = window.prompt(
+        "远程仓库 URL（例如 https://github.com/org/repo.git）",
+        "",
+      );
+      if (!entered?.trim()) return;
+      remote = entered.trim();
+      try {
+        await api.patchProject(project.id, { repoUrl: remote });
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "保存远程地址失败");
+        return;
+      }
+    }
+    setRepoSyncing(true);
+    try {
+      const result = await api.syncRepo(project.id);
+      setSnapshot(await api.snapshot(project.id));
+      toast(
+        result.pushed
+          ? `已推送到 ${result.remote} · ${result.commit?.slice(0, 8) ?? ""}`
+          : "没有需要推送的提交",
+      );
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "推送远程仓库失败");
+    } finally {
+      setRepoSyncing(false);
+    }
   };
 
   const createCloneToken = async () => {
@@ -381,6 +417,15 @@ export function CodeView() {
               : selectedFilePath() ?? (codeSource() === "repo" ? "仓库" : "工作区")}
           </span>
           <Show when={snapshot()?.project}>
+            <button
+              class="btn"
+              style={{ padding: "3px 9px", "font-size": "11px" }}
+              disabled={repoSyncing()}
+              title="把合并后的主分支推送到 repoUrl"
+              onClick={() => void pushRemoteRepo()}
+            >
+              {repoSyncing() ? "推送中…" : "推送远程"}
+            </button>
             <button
               class="btn"
               style={{ padding: "3px 9px", "font-size": "11px" }}

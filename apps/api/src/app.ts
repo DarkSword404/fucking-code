@@ -108,6 +108,7 @@ import { createPullRequest } from "./github.js";
 import { createProjectForUser } from "./provision.js";
 import { buildProjectPackage } from "./export.js";
 import { handleGitHttp } from "./git-host.js";
+import { syncProjectRepo } from "./repo-sync.js";
 import { buildSnapshot, roomFor } from "./snapshot.js";
 import {
   previewForToken,
@@ -2671,6 +2672,38 @@ function publicBaseUrl(): string {
   ).replace(/\/$/, "");
 }
 
+app.post("/api/v1/projects/:projectId/repo/sync", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  if (!project.repoUrl) {
+    throw new HttpError(400, "REPO_URL_NOT_CONFIGURED", "请先设置远程仓库地址（repoUrl）。");
+  }
+  const result = await syncProjectRepo(project.id);
+  await audit({
+    tenantId: project.tenantId,
+    projectId: project.id,
+    actorType: "user",
+    actorId: c.get("user").id,
+    action: "repo.sync",
+    targetType: "project",
+    targetId: project.id,
+    detail: {
+      pushed: result.pushed,
+      branch: result.branch,
+      remote: result.remote,
+      commit: result.commit,
+      error: result.error ?? null,
+    },
+  });
+  if (!result.pushed) {
+    throw new HttpError(
+      502,
+      "REPO_SYNC_FAILED",
+      `推送远程仓库失败：${result.error ?? "unknown error"}`,
+    );
+  }
+  return c.json(result);
+});
+
 app.post("/api/v1/projects/:projectId/repo/tokens", async (c) => {
   const { project } = await requireProjectEditor(c);
   if (!project.repoPath) {
@@ -3205,9 +3238,17 @@ app.post("/api/v1/workspaces/:workspaceId/merge", async (c) => {
       commit: merged.commit,
     },
   });
+  const repoSync = await syncProjectRepo(project.id).catch((error) => ({
+    pushed: false,
+    skipped: true,
+    commit: null,
+    branch: project.defaultBranch,
+    remote: project.repoUrl,
+    error: error instanceof Error ? error.message : String(error),
+  }));
   await pauseAutoDevelopment(project.id, "task_merged");
   void nudgePhaseProposal(project.id, "task_merged");
-  return c.json(merged);
+  return c.json({ ...merged, repoSync });
 });
 
 app.post("/api/v1/workspaces/:workspaceId/pull-request", async (c) => {
