@@ -1007,6 +1007,30 @@ async function autoMergeReviewedTask(input: {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     const attempts = Number(evidence["mergeAttempts"] ?? 0) + 1;
+    const conflict = /CONFLICT|Automatic merge failed|Merge conflict/i.test(reason);
+    if (conflict) {
+      // A conflicting branch needs the agent to merge main into its worktree
+      // and resolve it. Retrying the same merge cannot succeed. Put it back in
+      // the queue instead of parking it in review (which would pause the whole
+      // project and produce repeated idle notices).
+      await db
+        .update(tasks)
+        .set({
+          status: "ready",
+          blockedReason: `合并冲突：${reason.slice(0, 900)}\n请在 worktree 内把 main merge 到当前分支、解决冲突并重跑测试；不要把当前分支合并回主分支。`,
+          evidence: { ...evidence, mergeAttempts: attempts, mergeConflict: true },
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+        taskId: task.id,
+        action: "rework",
+        status: "ready",
+        reason: "merge_conflict",
+        attempts,
+      }).catch(() => undefined);
+      return false;
+    }
     // Transient merge failures should heal without user action. Five attempts
     // covers a dirty base repo that the next internal merge/checkout cleans up.
     const giveUp = attempts >= 5;

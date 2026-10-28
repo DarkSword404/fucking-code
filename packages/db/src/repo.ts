@@ -158,10 +158,16 @@ export async function latestArtifactContent(artifactId: string) {
 
 export async function messagePage(roomId: string, cursor: number | null, limit = 40) {
   const db = getDb();
+  // Idle notices are diagnostic events, not conversation. Keeping them in the
+  // page window would push real discussion out and leave the chat looking empty.
+  const visible = sql`coalesce(${messages.metadata}->>'kind', '') <> 'gate_waiting'`;
+  const scope = cursor
+    ? and(eq(messages.roomId, roomId), sql`${messages.seq} < ${cursor}`, visible)
+    : and(eq(messages.roomId, roomId), visible);
   const rows = await db
     .select()
     .from(messages)
-    .where(cursor ? and(eq(messages.roomId, roomId), sql`${messages.seq} < ${cursor}`) : eq(messages.roomId, roomId))
+    .where(scope)
     .orderBy(desc(messages.seq))
     .limit(limit);
   return rows.reverse();

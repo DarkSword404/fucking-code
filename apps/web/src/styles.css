@@ -501,13 +501,19 @@ button {
   flex: 1;
   overflow-y: auto;
   padding: 18px 22px 8px;
+  display: flex;
+  flex-direction: column;
 }
 .chat-inner {
   max-width: 880px;
-  margin: 0 auto;
+  /* Keep short conversations anchored above the composer instead of leaving a
+     large empty block under the last message. When content overflows, the auto
+     top margin collapses to 0 and normal scrolling resumes. */
+  margin: auto auto 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
 }
 .day-divider {
   display: flex;
