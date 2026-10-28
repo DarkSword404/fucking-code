@@ -23,6 +23,7 @@ services:
       # and mount /var/run/docker.sock below.
       RUNNER_MODE: ${PROD_RUNNER_MODE:-host}
       PREVIEW_MODE: host
+      APP_INSTANCE_ID: fucking-code
       RUNNER_IMAGE: ${RUNNER_IMAGE:-node:22-bookworm-slim}
       # BROWSER_EXECUTABLE_PATH: /usr/bin/chromium
       OPENCODE_URL: ${OPENCODE_URL:-http://host.docker.internal:49374}

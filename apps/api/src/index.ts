@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import { DEV_IDS, getDb, memories, migrate, normalizeArtifacts, projects, seed } from "@devteam/db";
-import { ensureDemoRepo } from "@devteam/workspace";
+import { cleanupManagedContainers, ensureDemoRepo } from "@devteam/workspace";
 
 try {
   process.loadEnvFile(process.env.ENV_FILE ?? ".env");
@@ -45,6 +45,10 @@ setInterval(() => {
     console.error("[devteam] memory decay failed", error);
   });
 }, 6 * 60 * 60 * 1000).unref();
+
+const { cleanupOrphanedPreviews } = await import("./preview.js");
+cleanupManagedContainers("runner");
+cleanupOrphanedPreviews();
 
 const { app } = await import("./app.js");
 const { recoverOrphanedTasks, startAutoDevelopmentLoop } = await import("./auto-dev.js");

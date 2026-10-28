@@ -189,11 +189,14 @@ CODE_AGENT_MAX_STEPS=20
 
 ```env
 RUNNER_MODE=docker
+PREVIEW_MODE=docker
 # 默认按仓库内容选 node:22-bookworm-slim 或 python:3.12-slim
 # RUNNER_IMAGE=node:22-bookworm-slim
 RUNNER_MEMORY=1g
 RUNNER_CPUS=2
 RUNNER_PIDS_LIMIT=256
+# 多实例同机时给每个实例唯一值，便于清理自己的孤儿容器
+APP_INSTANCE_ID=fucking-code
 ```
 
 隔离边界：
@@ -215,7 +218,15 @@ PREVIEW_MODE=docker
 PREVIEW_TTL_MS=1800000
 ```
 
-预览容器只发布到 `127.0.0.1`，默认 30 分钟 TTL，退出或超时会自动删除；仍使用同一个 worktree 挂载和资源限制。需要数据库或外部服务的项目仍建议先用 `PREVIEW_MODE=host`。
+预览容器只发布到 `127.0.0.1`，默认 30 分钟 TTL，退出或超时会自动删除；仍使用同一个 worktree 挂载和资源限制。应用重启时会按 `fucking-code.managed` + `APP_INSTANCE_ID` 清理上一次遗留的 runner/preview 容器。
+
+需要数据库或外部服务的项目仍建议先用 `PREVIEW_MODE=host`。
+
+新服务器可一键开启：
+
+```bash
+./scripts/install-server.sh --url=https://dev.example.com --docker --systemd
+```
 
 ### 一键迁移包
 
@@ -242,12 +253,16 @@ git push -u origin --all && git push --tags
 
 每个项目会自动维护一个只读 bare mirror，可直接 `git clone` 到别的机器：
 
+代码页点「克隆地址」会生成一个只显示一次的只读 Token（默认 30 天），并给出可直接复制的命令：
+
 ```bash
-git -c http.extraHeader="Authorization: Bearer <session-token>" \
+git -c http.extraHeader="Authorization: Bearer <repo-token>" \
   clone http://<host>:8787/git/<projectId>.git app
 ```
 
-- GET/POST 都走现有的会话鉴权；未登录返回 401，无项目权限返回 404。
+也可以用登录会话的 Bearer token。Token 绑定单个项目，只能 clone/fetch。
+
+- GET/POST 都走 Token 或会话鉴权；未登录返回 401，无项目权限返回 404。
 - 只开放 upload-pack（clone/fetch）；`git-receive-pack` 返回 403。
 - 推送仍走任务/评审/合并流程，不能绕过门禁直接改主分支。
 - mirror 位于 `PROJECT_GIT_ROOT`（默认 `data/git`），每次请求前从项目仓库同步分支和标签。

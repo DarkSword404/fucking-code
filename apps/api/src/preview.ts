@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { defaultRunnerImage } from "@devteam/workspace";
+import { appInstanceId, cleanupManagedContainers, defaultRunnerImage } from "@devteam/workspace";
 
 interface PreviewState {
   projectId: string;
@@ -150,6 +150,10 @@ function startDockerPreview(input: {
     `${uid}:${gid}`,
     "--tmpfs",
     "/tmp:rw,size=256m",
+    "--label",
+    "fucking-code.managed=preview",
+    "--label",
+    `fucking-code.app=${appInstanceId()}`,
     "-e",
     "HOME=/tmp",
     "-e",
@@ -201,6 +205,11 @@ function startDockerPreview(input: {
       spawn(dockerBin, ["rm", "-f", container], { stdio: "ignore" });
     },
   };
+}
+
+/** Remove preview containers left behind by a previous process. */
+export function cleanupOrphanedPreviews(): number {
+  return cleanupManagedContainers("preview");
 }
 
 export async function startPreview(projectId: string, repoPath: string): Promise<{ url: string; port: number }> {

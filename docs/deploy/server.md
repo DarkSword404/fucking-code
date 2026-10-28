@@ -99,6 +99,23 @@ rm /tmp/opencode-auth.json
 ./scripts/install-server.sh --opencode-auth=/tmp/opencode-auth.json
 ```
 
+需要项目测试/部署/运维在 Docker 中隔离，加 `--docker`：
+
+```bash
+./scripts/install-server.sh --url=https://dev.example.com --docker --systemd
+```
+
+它会安装 Docker、把部署用户加入 `docker` 组、拉取 runner 镜像，并设置：
+
+```env
+RUNNER_MODE=docker
+PREVIEW_MODE=docker
+RUNNER_IMAGE=node:22-bookworm-slim
+APP_INSTANCE_ID=fucking-code
+```
+
+没有 systemd 时，重新登录一次让 `docker` 组生效，再运行 `./start.sh --server`。
+
 ### C. 不用 OpenCode 订阅，改用 OpenAI-compatible API
 
 ```env
@@ -156,7 +173,8 @@ MODEL_GATEWAY=opencode
 
 RUNNER_MODE=host
 PREVIEW_MODE=host
-# 需要容器隔离时再改 docker，并确认镜像已存在
+# 需要容器隔离时改成 docker，并确认镜像已存在；安装脚本 --docker 会自动设置
+APP_INSTANCE_ID=fucking-code
 
 BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
 ```
@@ -271,6 +289,6 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-默认镜像是 host runner；要做容器化 runner，需要自定义镜像安装 docker CLI/Chrome，并打开 compose 里的 socket 挂载和 `PROD_RUNNER_MODE=docker`。
+默认镜像是 host runner；要做容器化 runner，需要自定义镜像安装 docker CLI/Chrome，并打开 compose 里的 socket 挂载和 `PROD_RUNNER_MODE=docker`。宿主机直接部署时用 `install-server.sh --docker` 更简单，它会安装 Docker、加入 docker 组、拉取镜像并设置 `RUNNER_MODE=docker` / `PREVIEW_MODE=docker`。
 
 容器内 workbench 浏览器还要求镜像里有 Chrome/Chromium，并设置 `BROWSER_EXECUTABLE_PATH`；没有浏览器时验证报告会把 UI 项标为「未覆盖」。

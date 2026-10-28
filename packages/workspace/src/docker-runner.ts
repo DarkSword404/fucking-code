@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -27,6 +27,35 @@ export function defaultRunnerImage(root: string): string {
     return "python:3.12-slim";
   }
   return "node:22-bookworm-slim";
+}
+
+export function appInstanceId(): string {
+  return process.env.APP_INSTANCE_ID?.trim() || "fucking-code";
+}
+
+/** Remove containers left behind by a previous process (crash/restart). */
+export function cleanupManagedContainers(kind: "runner" | "preview"): number {
+  const dockerBin = process.env.DOCKER_BIN ?? "docker";
+  try {
+    const output = execFileSync(
+      dockerBin,
+      [
+        "ps",
+        "-aq",
+        "--filter",
+        `label=fucking-code.managed=${kind}`,
+        "--filter",
+        `label=fucking-code.app=${appInstanceId()}`,
+      ],
+      { encoding: "utf8", timeout: 15_000 },
+    ).trim();
+    const ids = output.split(/\s+/).filter(Boolean);
+    if (!ids.length) return 0;
+    execFileSync(dockerBin, ["rm", "-f", ...ids], { stdio: "ignore", timeout: 60_000 });
+    return ids.length;
+  } catch {
+    return 0;
+  }
 }
 
 export interface DockerRunInput {
@@ -86,6 +115,10 @@ export async function dockerRunCommand(input: DockerRunInput): Promise<CommandRe
     `${uid}:${gid}`,
     "--tmpfs",
     "/tmp:rw,size=256m",
+    "--label",
+    "fucking-code.managed=runner",
+    "--label",
+    `fucking-code.app=${appInstanceId()}`,
     "-e",
     "HOME=/tmp",
     "-e",

@@ -55,6 +55,23 @@ export const sessions = pgTable(
   (t) => [unique("sessions_token_hash_unique").on(t.tokenHash)],
 );
 
+export const repoTokens = pgTable(
+  "repo_tokens",
+  {
+    id: uuid("id").primaryKey(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull().default(""),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdBy: uuid("created_by"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [index("repo_tokens_project_idx").on(t.projectId)],
+);
+
 export const inviteCodes = pgTable("invite_codes", {
   id: uuid("id").primaryKey(),
   code: text("code").notNull().unique(),

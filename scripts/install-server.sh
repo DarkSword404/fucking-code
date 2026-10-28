@@ -5,6 +5,7 @@
 #   ./scripts/install-server.sh --url=https://dev.example.com --systemd
 #   ./scripts/install-server.sh --no-browser            # skip Chromium
 #   ./scripts/install-server.sh --opencode-auth=file.json
+#   ./scripts/install-server.sh --docker              # isolated test/deploy/ops containers
 #
 # It installs Node.js 22, git, bubblewrap, OpenCode, npm dependencies, Chromium
 # (unless disabled), creates .env, initializes the admin account, and can
@@ -17,6 +18,7 @@ APP_DIR="$(pwd)"
 PUBLIC_URL=""
 WITH_BROWSER=1
 WITH_SYSTEMD=0
+WITH_DOCKER=0
 OPENCODE_AUTH_FILE=""
 ADMIN_PASSWORD=""
 
@@ -24,6 +26,7 @@ for arg in "$@"; do
   case "$arg" in
     --url=*) PUBLIC_URL="${arg#--url=}" ;;
     --no-browser) WITH_BROWSER=0 ;;
+    --docker) WITH_DOCKER=1 ;;
     --systemd) WITH_SYSTEMD=1 ;;
     --opencode-auth=*) OPENCODE_AUTH_FILE="${arg#--opencode-auth=}" ;;
     --admin-password=*) ADMIN_PASSWORD="${arg#--admin-password=}" ;;
@@ -53,9 +56,9 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 
 run_as_user() {
   if [ "$EUID" -eq 0 ]; then
-    runuser -u "$RUN_USER" -- env HOME="$RUN_HOME" PATH="$RUN_HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin" "$@"
+    runuser -u "$RUN_USER" -- env HOME="$RUN_HOME" PATH="$RUN_HOME/.opencode/bin:$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@"
   else
-    env HOME="$RUN_HOME" PATH="$RUN_HOME/.opencode/bin:$PATH" "$@"
+    env HOME="$RUN_HOME" PATH="$RUN_HOME/.opencode/bin:$RUN_HOME/.local/bin:$PATH" "$@"
   fi
 }
 
@@ -77,6 +80,14 @@ if [ "$NODE_OK" -ne 1 ]; then
 fi
 command -v node >/dev/null 2>&1 || fail "Node.js installation failed."
 say "Node.js $(node -v) · npm $(npm -v)"
+
+if [ "$WITH_DOCKER" = "1" ]; then
+  say "Installing Docker for project test/deploy/ops isolation…"
+  "${SUDO[@]}" apt-get install -y --no-install-recommends docker.io
+  "${SUDO[@]}" systemctl enable --now docker.service
+  "${SUDO[@]}" usermod -aG docker "$RUN_USER"
+  "${SUDO[@]}" docker pull "${RUNNER_IMAGE:-node:22-bookworm-slim}"
+fi
 
 if ! run_as_user bash -lc 'command -v opencode >/dev/null 2>&1'; then
   say "Installing OpenCode CLI…"
@@ -110,6 +121,15 @@ env_get() {
 env_set HOST "0.0.0.0"
 env_set PORT "8787"
 env_set AUTH_MODE "session"
+env_set APP_INSTANCE_ID "fucking-code"
+if [ "$WITH_DOCKER" = "1" ]; then
+  env_set RUNNER_MODE "docker"
+  env_set PREVIEW_MODE "docker"
+  env_set RUNNER_IMAGE "${RUNNER_IMAGE:-node:22-bookworm-slim}"
+else
+  env_set RUNNER_MODE "host"
+  env_set PREVIEW_MODE "host"
+fi
 if [ -n "$PUBLIC_URL" ]; then
   env_set WEB_ORIGIN "$PUBLIC_URL"
   env_set PUBLIC_BASE_URL "$PUBLIC_URL"

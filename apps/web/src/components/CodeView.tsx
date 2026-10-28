@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/atom-one-dark.css";
-import { api, type FileEntry, type WorkspaceItem } from "../lib/api";
+import { api, type FileEntry, type RepoTokenInfo, type WorkspaceItem } from "../lib/api";
 import { parseDiff, type DiffFileStatus, type DiffHunk } from "../lib/diff";
 import {
   activeWorkspaceId,
@@ -152,6 +152,8 @@ export function CodeView() {
   const [commandStatus, setCommandStatus] = createSignal("");
   const [commandRunning, setCommandRunning] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
+  const [cloneInfo, setCloneInfo] = createSignal<RepoTokenInfo | null>(null);
+  const [cloneLoading, setCloneLoading] = createSignal(false);
 
   onMount(() => {
     if (!codeFiles().length) void loadCodeView();
@@ -182,6 +184,31 @@ export function CodeView() {
     const ok = await saveCodeFile(path, editContent());
     setSaving(false);
     if (ok) setEditing(false);
+  };
+
+  const createCloneToken = async () => {
+    const projectId = snapshot()?.project.id;
+    if (!projectId) return;
+    setCloneLoading(true);
+    try {
+      const info = await api.createRepoToken(projectId, "web-clone");
+      setCloneInfo(info);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "创建克隆凭据失败");
+    } finally {
+      setCloneLoading(false);
+    }
+  };
+
+  const copyCloneCommand = async () => {
+    const command = cloneInfo()?.command;
+    if (!command) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      toast("克隆命令已复制");
+    } catch {
+      toast("复制失败，请手动选择命令");
+    }
   };
 
   const exportProject = async () => {
@@ -354,6 +381,15 @@ export function CodeView() {
               : selectedFilePath() ?? (codeSource() === "repo" ? "仓库" : "工作区")}
           </span>
           <Show when={snapshot()?.project}>
+            <button
+              class="btn"
+              style={{ padding: "3px 9px", "font-size": "11px" }}
+              disabled={cloneLoading()}
+              title="生成只读 Git 克隆地址"
+              onClick={() => void createCloneToken()}
+            >
+              {cloneLoading() ? "生成中…" : "克隆地址"}
+            </button>
             <button
               class="btn"
               style={{ padding: "3px 9px", "font-size": "11px" }}
@@ -656,6 +692,30 @@ export function CodeView() {
           </Show>
         </div>
       </section>
+      <Show when={cloneInfo()}>
+        <div class="modal-scrim" onClick={() => setCloneInfo(null)}>
+          <div class="modal" onClick={(event) => event.stopPropagation()}>
+            <h3>只读 Git 克隆地址</h3>
+            <p>
+              凭据只显示一次，默认 30 天有效；只能 clone/fetch，推送仍需走任务和评审。
+            </p>
+            <textarea
+              readonly
+              rows={3}
+              style={{ width: "100%", "font-family": "monospace", "font-size": "12px" }}
+              value={cloneInfo()!.command}
+            />
+            <div class="modal-actions">
+              <button class="btn" onClick={() => void copyCloneCommand()}>
+                复制命令
+              </button>
+              <button class="btn primary" onClick={() => setCloneInfo(null)}>
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }

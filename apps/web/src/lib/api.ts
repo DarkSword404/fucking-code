@@ -80,6 +80,13 @@ export interface AdminInvite {
   createdAt: string;
 }
 
+export interface RepoTokenInfo {
+  token: string;
+  cloneUrl: string;
+  expiresAt: string;
+  command: string;
+}
+
 export interface WorkspaceItem {
   id: string;
   projectId: string;
@@ -351,6 +358,11 @@ export const api = {
       pullRequest: { url: string; number: number } | null;
       warning: string | null;
     }>(`/workspaces/${workspaceId}/pull-request`, { method: "POST" }),
+  createRepoToken: (projectId: string, name = "clone") =>
+    request<RepoTokenInfo>(`/projects/${projectId}/repo/tokens`, {
+      method: "POST",
+      body: JSON.stringify({ name, expiresInDays: 30 }),
+    }),
   startPreview: (projectId: string) =>
     request<{ url: string; port: number }>(`/projects/${projectId}/preview`, { method: "POST" }),
   stopPreview: (projectId: string) =>

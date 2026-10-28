@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
+import { getCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -54,6 +55,7 @@ import {
   messages,
   projectMembers,
   projects,
+  repoTokens,
   sessions,
   taskDependencies,
   tasks,
@@ -72,7 +74,13 @@ import {
   phaseIndex,
   uuidv7,
 } from "@devteam/domain";
-import { createSession, destroySession, publicUser } from "./auth.js";
+import {
+  createSession,
+  destroySession,
+  publicUser,
+  SESSION_COOKIE,
+  userForSessionToken,
+} from "./auth.js";
 import { isDemoMode } from "./demo.js";
 import {
   authenticate,
@@ -94,7 +102,7 @@ import {
   startTaskForProject,
 } from "./auto-dev.js";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
-import { hashPassword, safeEqual, verifyPassword } from "./password.js";
+import { hashPassword, hashSessionToken, safeEqual, verifyPassword } from "./password.js";
 import { joinPresence, leavePresence, listPresence, touchPresence } from "./presence.js";
 import { createPullRequest } from "./github.js";
 import { createProjectForUser } from "./provision.js";
@@ -130,7 +138,6 @@ app.use(
   }),
 );
 app.use("/api/*", authenticate);
-app.use("/git/*", authenticate);
 app.onError((error, c) => jsonError(c, error));
 
 app.get("/health", (c) =>
@@ -2651,16 +2658,136 @@ app.get("/api/v1/projects/:projectId/export", async (c) => {
   }
 });
 
+const repoTokenSchema = z.object({
+  name: z.string().trim().max(80).optional(),
+  expiresInDays: z.number().int().min(1).max(365).optional(),
+});
+
+function publicBaseUrl(): string {
+  return (
+    process.env.PUBLIC_BASE_URL ??
+    process.env.WEB_ORIGIN?.split(",")[0] ??
+    "http://127.0.0.1:8787"
+  ).replace(/\/$/, "");
+}
+
+app.post("/api/v1/projects/:projectId/repo/tokens", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  if (!project.repoPath) {
+    throw new HttpError(400, "REPO_NOT_CONFIGURED", "This project has no repository path.");
+  }
+  const body = repoTokenSchema.parse(await c.req.json().catch(() => ({})));
+  const token = randomBytes(24).toString("base64url");
+  const expiresAt = new Date(Date.now() + (body.expiresInDays ?? 30) * 24 * 60 * 60 * 1000);
+  const db = getDb();
+  await db.insert(repoTokens).values({
+    id: uuidv7(),
+    projectId: project.id,
+    name: body.name ?? "clone",
+    tokenHash: hashSessionToken(token),
+    createdBy: c.get("user").id,
+    expiresAt,
+  });
+  const cloneUrl = `${publicBaseUrl()}/git/${project.id}.git`;
+  await audit({
+    tenantId: project.tenantId,
+    projectId: project.id,
+    actorType: "user",
+    actorId: c.get("user").id,
+    action: "repo.token.created",
+    targetType: "project",
+    targetId: project.id,
+    detail: { name: body.name ?? "clone", expiresAt: expiresAt.toISOString() },
+  });
+  return c.json(
+    {
+      token,
+      cloneUrl,
+      expiresAt: expiresAt.toISOString(),
+      command: `git -c http.extraHeader="Authorization: Bearer ${token}" clone ${cloneUrl} app`,
+    },
+    201,
+  );
+});
+
+app.get("/api/v1/projects/:projectId/repo/tokens", async (c) => {
+  const { project } = await requireProject(c);
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: repoTokens.id,
+      name: repoTokens.name,
+      createdAt: repoTokens.createdAt,
+      expiresAt: repoTokens.expiresAt,
+      lastUsedAt: repoTokens.lastUsedAt,
+    })
+    .from(repoTokens)
+    .where(eq(repoTokens.projectId, project.id))
+    .orderBy(desc(repoTokens.createdAt));
+  return c.json({ items: rows });
+});
+
+app.delete("/api/v1/projects/:projectId/repo/tokens/:tokenId", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  await getDb()
+    .delete(repoTokens)
+    .where(and(eq(repoTokens.id, c.req.param("tokenId")), eq(repoTokens.projectId, project.id)));
+  return c.json({ ok: true });
+});
+
 app.all("/git/:projectId/*", async (c) => {
   if (isDemoMode()) {
     throw new HttpError(403, "DEMO_MODE", "Git hosting is disabled in demo mode.");
   }
   const projectId = c.req.param("projectId").replace(/\.git$/, "");
-  const access = await findProjectForUser(projectId, c.get("user").id);
-  if (!access) {
-    throw new HttpError(404, "PROJECT_ACCESS_DENIED", "You do not have access to this project.");
+  const bearer = c.req
+    .header("authorization")
+    ?.match(/^Bearer\s+(.+)$/i)?.[1]
+    ?.trim();
+  const sessionToken = bearer ?? getCookie(c, SESSION_COOKIE) ?? null;
+  const sessionUser = sessionToken ? await userForSessionToken(sessionToken) : null;
+  const db = getDb();
+  let project: typeof projects.$inferSelect | null = null;
+  let remoteUser = "unknown";
+
+  if (sessionUser) {
+    const access = await findProjectForUser(projectId, sessionUser.id);
+    if (!access) {
+      throw new HttpError(404, "PROJECT_ACCESS_DENIED", "You do not have access to this project.");
+    }
+    project = access.project;
+    remoteUser = sessionUser.email;
+  } else if (bearer) {
+    const [tokenRow] = await db
+      .select()
+      .from(repoTokens)
+      .where(
+        and(
+          eq(repoTokens.projectId, projectId),
+          eq(repoTokens.tokenHash, hashSessionToken(bearer)),
+        ),
+      )
+      .limit(1);
+    if (!tokenRow) {
+      throw new HttpError(401, "UNAUTHENTICATED", "Invalid repository token.");
+    }
+    if (tokenRow.expiresAt && tokenRow.expiresAt.getTime() <= Date.now()) {
+      throw new HttpError(401, "TOKEN_EXPIRED", "Repository token has expired.");
+    }
+    const [row] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!row || !row.repoPath) {
+      throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
+    }
+    project = row;
+    remoteUser = tokenRow.name || "repo-token";
+    await db
+      .update(repoTokens)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(repoTokens.id, tokenRow.id));
+  } else {
+    throw new HttpError(401, "UNAUTHENTICATED", "Authentication required.");
   }
-  const project = access.project;
+
   if (!project.repoPath) {
     throw new HttpError(400, "REPO_NOT_CONFIGURED", "This project has no repository path.");
   }
@@ -2681,7 +2808,7 @@ app.all("/git/:projectId/*", async (c) => {
       "git-protocol": c.req.header("git-protocol"),
     },
     body,
-    remoteUser: c.get("user").email,
+    remoteUser,
   });
   return new Response(new Uint8Array(response.body), {
     status: response.status,
