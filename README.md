@@ -218,6 +218,20 @@ git push -u origin --all && git push --tags
 
 对应 API：`GET /api/v1/projects/:projectId/export`。
 
+### Git 仓库托管
+
+每个项目会自动维护一个只读 bare mirror，可直接 `git clone` 到别的机器：
+
+```bash
+git -c http.extraHeader="Authorization: Bearer <session-token>" \
+  clone http://<host>:8787/git/<projectId>.git app
+```
+
+- GET/POST 都走现有的会话鉴权；未登录返回 401，无项目权限返回 404。
+- 只开放 upload-pack（clone/fetch）；`git-receive-pack` 返回 403。
+- 推送仍走任务/评审/合并流程，不能绕过门禁直接改主分支。
+- mirror 位于 `PROJECT_GIT_ROOT`（默认 `data/git`），每次请求前从项目仓库同步分支和标签。
+
 ### 两种 Agent 运行时
 
 ```env

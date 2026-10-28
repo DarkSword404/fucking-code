@@ -134,6 +134,12 @@ export async function buildProjectPackage(projectId: string): Promise<ProjectPac
     const bundle = await readFile(bundlePath);
     const bundleSha256 = createHash("sha256").update(bundle).digest("hex");
     const exportedAt = new Date().toISOString();
+    const publicBase = (
+      process.env.PUBLIC_BASE_URL ??
+      process.env.WEB_ORIGIN?.split(",")[0] ??
+      "http://127.0.0.1:8787"
+    ).replace(/\/$/, "");
+    const cloneUrl = `${publicBase}/git/${project.id}.git`;
     const manifest = {
       format: "fucking-code-project-export",
       version: 1,
@@ -191,6 +197,12 @@ cd app
 git remote set-url origin <新服务器的仓库地址>
 git push -u origin --all
 git push --tags
+\`\`\`
+
+托管克隆地址（只读）：
+
+\`\`\`bash
+git -c http.extraHeader="Authorization: Bearer <session-token>" clone ${cloneUrl} app
 \`\`\`
 
 原始分支：\`${branch}\`

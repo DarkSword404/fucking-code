@@ -99,6 +99,7 @@ import { joinPresence, leavePresence, listPresence, touchPresence } from "./pres
 import { createPullRequest } from "./github.js";
 import { createProjectForUser } from "./provision.js";
 import { buildProjectPackage } from "./export.js";
+import { handleGitHttp } from "./git-host.js";
 import { buildSnapshot, roomFor } from "./snapshot.js";
 import {
   previewForToken,
@@ -129,6 +130,7 @@ app.use(
   }),
 );
 app.use("/api/*", authenticate);
+app.use("/git/*", authenticate);
 app.onError((error, c) => jsonError(c, error));
 
 app.get("/health", (c) =>
@@ -2647,6 +2649,44 @@ app.get("/api/v1/projects/:projectId/export", async (c) => {
       `导出失败：${error instanceof Error ? error.message : String(error)}`,
     );
   }
+});
+
+app.all("/git/:projectId/*", async (c) => {
+  if (isDemoMode()) {
+    throw new HttpError(403, "DEMO_MODE", "Git hosting is disabled in demo mode.");
+  }
+  const projectId = c.req.param("projectId").replace(/\.git$/, "");
+  const access = await findProjectForUser(projectId, c.get("user").id);
+  if (!access) {
+    throw new HttpError(404, "PROJECT_ACCESS_DENIED", "You do not have access to this project.");
+  }
+  const project = access.project;
+  if (!project.repoPath) {
+    throw new HttpError(400, "REPO_NOT_CONFIGURED", "This project has no repository path.");
+  }
+  const prefix = `/git/${c.req.param("projectId")}/`;
+  const pathInfo = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : "";
+  const body =
+    c.req.method === "POST"
+      ? Buffer.from(await c.req.arrayBuffer())
+      : Buffer.alloc(0);
+  const response = await handleGitHttp({
+    projectId,
+    repoPath: project.repoPath,
+    pathInfo,
+    method: c.req.method,
+    query: new URL(c.req.url).search.replace(/^\?/, ""),
+    headers: {
+      "content-type": c.req.header("content-type"),
+      "git-protocol": c.req.header("git-protocol"),
+    },
+    body,
+    remoteUser: c.get("user").email,
+  });
+  return new Response(new Uint8Array(response.body), {
+    status: response.status,
+    headers: response.headers,
+  });
 });
 
 app.post("/api/v1/projects/:projectId/tasks/:taskId/work", async (c) => {
