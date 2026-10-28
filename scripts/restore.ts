@@ -2,6 +2,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
+
+try {
+  process.loadEnvFile(process.env.ENV_FILE ?? ".env");
+} catch {
+  // .env is optional
+}
+
 const file = process.argv[2];
 const force = process.argv.includes("--force");
 if (!file) {

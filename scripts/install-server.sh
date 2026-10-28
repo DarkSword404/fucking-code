@@ -180,8 +180,8 @@ if [ "$WITH_SYSTEMD" = "1" ]; then
   cat >/tmp/fucking-code.service <<EOF
 [Unit]
 Description=Fucking Code (API + Web)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target opencode-start.service
+Wants=network-online.target opencode-start.service
 
 [Service]
 Type=simple
@@ -210,7 +210,7 @@ Type=oneshot
 User=$RUN_USER
 Group=$RUN_USER
 Environment=HOME=$RUN_HOME
-ExecStart=$OPENCODE_SERVICE_PATH service start
+ExecStart=-$OPENCODE_SERVICE_PATH service start
 RemainAfterExit=yes
 
 [Install]

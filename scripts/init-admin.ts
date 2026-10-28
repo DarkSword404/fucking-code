@@ -1,7 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { closeDb, DEV_IDS, getDb, migrate, seed, users } from "@devteam/db";
-import { hashPassword } from "../apps/api/src/password.js";
+
+try {
+  process.loadEnvFile(process.env.ENV_FILE ?? ".env");
+} catch {
+  // .env is optional
+}
+
+const { closeDb, DEV_IDS, getDb, migrate, seed, users } = await import("@devteam/db");
+const { eq } = await import("drizzle-orm");
+const { hashPassword } = await import("../apps/api/src/password.js");
 
 const provided = process.argv[2] ?? process.env.ADMIN_PASSWORD ?? process.env.DEV_PASSWORD;
 const password = provided ?? randomBytes(12).toString("base64url");
