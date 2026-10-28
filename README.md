@@ -136,7 +136,18 @@ MODEL_API_BASE_URL=https://api.openai.com/v1
 MODEL_API_KEY=...
 ```
 
-代码任务的内置执行器还在实验阶段；当前生产路径仍可用 OpenCode 工位。
+代码任务已经切到内置执行器：Fucking Code 自己维护工具循环（列目录、读文件、写文件、跑命令），通过网关拿模型输出，不再创建 OpenCode session。
+
+```env
+# 代码任务执行器：builtin = 自研工具循环；opencode = 旧的 OpenCode session
+CODE_EXECUTOR=builtin
+CODE_AGENT_MAX_STEPS=20
+# CODE_AGENT_TIMEOUT_MS=1200000
+```
+
+已用一个临时项目验证：`npm test` 从失败到通过、规格核对通过、任务进入内部 review，过程中 OpenCode session 数量保持 0 增长。
+
+尚未迁移：QA / 安全 / 部署 / 运维的 workbench 仍使用 OpenCode session 的浏览器与网络工具；这些任务暂时还需要 OpenCode。
 
 ### 两种 Agent 运行时
 
