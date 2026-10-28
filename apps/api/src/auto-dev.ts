@@ -57,6 +57,8 @@ const AUTO_PAUSE_LABELS: Record<string, string> = {
 const phaseNudgeLocks = new Set<string>();
 const lastPhaseNudge = new Map<string, number>();
 const lastGateNotice = new Map<string, number>();
+const lastTriageNudge = new Map<string, number>();
+const triageLocks = new Set<string>();
 const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
@@ -91,6 +93,95 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
     pendingArtifacts.length > 0 ||
     pendingTasks.length > 0
   );
+}
+
+/**
+ * When the queue has no ready work but failed/blocked tasks remain, hand the
+ * Lead one internal turn to triage: cancel, split, reopen or create rework.
+ * This is deliberately not a client question; engineering triage is internal.
+ */
+async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<void> {
+  if (triageLocks.has(projectId)) return;
+  const last = lastTriageNudge.get(projectId) ?? 0;
+  if (Date.now() - last < 15 * 60_000) return;
+  triageLocks.add(projectId);
+  try {
+    const db = getDb();
+    const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.status === "archived") return;
+    const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
+    if (!room || roomQueue.isRunning(room.id)) return;
+    const workspaceRows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.projectId, projectId));
+    if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
+
+    lastTriageNudge.set(projectId, Date.now());
+    const lines = stuck.slice(0, 8).map(
+      (task) => `- [${task.status}] ${task.title}：${(task.blockedReason ?? "无原因").slice(0, 220)}`,
+    );
+    const content = [
+      "编码队列当前没有 ready 任务，但有任务卡住：",
+      ...lines,
+      "",
+      "请 Lead 在团队内部处理：取消、返工、拆分或新建任务；工程事项不要问甲方。",
+      "处理完用 update_task/create_task 落状态，自动开发会继续。",
+    ].join("\n");
+    const messageId = uuidv7();
+    await insertMessage({
+      id: messageId,
+      tenantId: project.tenantId,
+      projectId: project.id,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+      content,
+      metadata: { kind: "task_triage", stuck: stuck.map((task) => task.id) },
+    });
+    const emit = projectEmitter(project.tenantId, project.id);
+    await emit(EVENT_TYPES.messageCreated, {
+      messageId,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+    });
+    const orchestrator = new Orchestrator({
+      runtime,
+      emit,
+      maxRounds: 1,
+      maxSpeakersPerRound: 1,
+      maxMessagesPerTurn: 3,
+    });
+    await new Promise<void>((resolve) => {
+      roomQueue.enqueue(room.id, async (signal) => {
+        try {
+          await orchestrator.run({
+            projectId: project.id,
+            roomId: room.id,
+            userMessageId: messageId,
+            content,
+            mentions: ["lead"],
+            participantKeys: ["lead"],
+            userName: "系统",
+            triggerLabel: "系统（任务分诊）",
+            readOnly: false,
+            phaseOnly: false,
+            userId: project.tenantId,
+            signal,
+          });
+        } finally {
+          resolve();
+        }
+      });
+    });
+  } catch (error) {
+    console.error("[auto-dev] task triage failed", error);
+  } finally {
+    triageLocks.delete(projectId);
+  }
 }
 
 /**
@@ -1042,6 +1133,13 @@ export async function autoStartNext(projectId: string): Promise<void> {
       }
     }
     if (!candidate) {
+      const stuck = taskRows.filter((task) =>
+        ["failed", "blocked", "needs_replan", "stale"].includes(task.status),
+      );
+      if (stuck.length) {
+        void nudgeStuckTasks(project.id, stuck);
+        return;
+      }
       void nudgePhaseProposal(project.id, "no_ready_tasks");
       return;
     }
