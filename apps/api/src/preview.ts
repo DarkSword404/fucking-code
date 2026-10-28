@@ -1,17 +1,19 @@
 import { randomBytes } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { defaultRunnerImage } from "@devteam/workspace";
 
 interface PreviewState {
   projectId: string;
   token: string;
   port: number;
-  process: ChildProcess;
   startedAt: number;
   output: string;
+  alive: () => boolean;
+  stop: () => void;
 }
 
 const previews = new Map<string, PreviewState>();
@@ -69,11 +71,15 @@ async function ensureDependencies(repoPath: string, hasPackage: boolean): Promis
   }
 }
 
-async function waitForServer(port: number, child: ChildProcess, getOutput: () => string): Promise<void> {
+async function waitForServer(
+  port: number,
+  alive: () => boolean,
+  getOutput: () => string,
+): Promise<void> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`preview process exited: ${getOutput().slice(-1200) || `code ${child.exitCode}`}`);
+    if (!alive()) {
+      throw new Error(`preview process exited: ${getOutput().slice(-1200)}`);
     }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`, {
@@ -89,12 +95,119 @@ async function waitForServer(port: number, child: ChildProcess, getOutput: () =>
   throw new Error(`preview did not start: ${getOutput().slice(-1200)}`);
 }
 
+const STATIC_SERVER = [
+  "const h=require('node:http'),f=require('node:fs'),p=require('node:path');",
+  "const r='/workspace';",
+  "const t={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.json':'application/json'};",
+  "h.createServer((q,s)=>{let u=decodeURIComponent((q.url||'/').split('?')[0]);if(u.endsWith('/'))u+='index.html';",
+  "let x=p.join(r,'public',u);if(!x.startsWith(p.join(r,'public')))return s.end();",
+  "f.readFile(x,(e,b)=>{if(e){f.readFile(p.join(r,'public','index.html'),(e2,b2)=>{if(e2)return s.end('Not found');s.setHeader('content-type','text/html');s.end(b2)})}else{s.setHeader('content-type',t[p.extname(x)]||'application/octet-stream');s.end(b)}})}).listen(Number(process.env.PORT||0),'0.0.0.0')",
+].join("");
+
+interface DockerPreview {
+  stop: () => void;
+  alive: () => boolean;
+  logs: ChildProcess;
+  container: string;
+}
+
+function startDockerPreview(input: {
+  repoPath: string;
+  port: number;
+  script: string | null;
+}): DockerPreview {
+  const image = process.env.PREVIEW_IMAGE?.trim() || defaultRunnerImage(input.repoPath);
+  const dockerBin = process.env.DOCKER_BIN ?? "docker";
+  const container = `fc-preview-${randomBytes(6).toString("hex")}`;
+  const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
+  const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
+  const command = input.script
+    ? ["npm", "run", input.script]
+    : ["node", "-e", STATIC_SERVER];
+  const args = [
+    "run",
+    "-d",
+    "--rm",
+    "--name",
+    container,
+    "--init",
+    "--pull=never",
+    "--network",
+    "bridge",
+    "--memory",
+    process.env.PREVIEW_MEMORY ?? "1g",
+    "--cpus",
+    process.env.PREVIEW_CPUS ?? "2",
+    "--pids-limit",
+    process.env.PREVIEW_PIDS_LIMIT ?? "256",
+    "--security-opt",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "--user",
+    `${uid}:${gid}`,
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "-e",
+    "HOME=/tmp",
+    "-e",
+    `PORT=${input.port}`,
+    "-e",
+    "HOST=0.0.0.0",
+    "-e",
+    "BROWSER=none",
+    "-e",
+    "NODE_ENV=development",
+    "-v",
+    `${input.repoPath}:/workspace:rw`,
+    "-w",
+    "/workspace",
+    "-p",
+    `127.0.0.1:${input.port}:${input.port}`,
+    image,
+    ...command,
+  ];
+  const run = spawnSync(dockerBin, args, { encoding: "utf8", timeout: 30_000 });
+  if (run.status !== 0) {
+    throw new Error(
+      `preview container failed to start: ${(run.stderr || run.stdout || "unknown docker error").slice(-1200)}`,
+    );
+  }
+  const logs = spawn(dockerBin, ["logs", "-f", container], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const alive = () => {
+    const inspect = spawnSync(
+      dockerBin,
+      ["inspect", "-f", "{{.State.Running}}", container],
+      { encoding: "utf8", timeout: 3_000 },
+    );
+    return inspect.status === 0 && inspect.stdout.trim() === "true";
+  };
+  return {
+    logs,
+    container,
+    alive,
+    stop: () => {
+      try {
+        logs.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      spawn(dockerBin, ["rm", "-f", container], { stdio: "ignore" });
+    },
+  };
+}
+
 export async function startPreview(projectId: string, repoPath: string): Promise<{ url: string; port: number }> {
   const existing = previews.get(projectId);
-  if (existing && existing.process.exitCode === null) {
+  if (existing && existing.alive()) {
     return { url: `/preview/${existing.token}/`, port: existing.port };
   }
-  if (existing) previews.delete(projectId);
+  if (existing) {
+    existing.stop();
+    previews.delete(projectId);
+  }
 
   let scripts: Record<string, string> = {};
   let hasPackage = false;
@@ -111,6 +224,47 @@ export async function startPreview(projectId: string, repoPath: string): Promise
 
   const port = await freePort();
   const script = scripts.start ? "start" : scripts.dev ? "dev" : null;
+  const mode = (process.env.PREVIEW_MODE ?? "host").toLowerCase();
+  const token = randomBytes(18).toString("base64url");
+  let output = "";
+  let state: PreviewState;
+
+  if (mode === "docker") {
+    const docker = startDockerPreview({ repoPath, port, script });
+    const collect = (chunk: Buffer) => {
+      output = `${output}${chunk.toString()}`.slice(-8000);
+      state.output = output;
+    };
+    docker.logs.stdout?.on("data", collect);
+    docker.logs.stderr?.on("data", collect);
+    state = {
+      projectId,
+      token,
+      port,
+      startedAt: Date.now(),
+      output,
+      alive: docker.alive,
+      stop: docker.stop,
+    };
+    previews.set(projectId, state);
+    try {
+      await waitForServer(port, docker.alive, () => output);
+      const ttlMs = Number(process.env.PREVIEW_TTL_MS ?? 30 * 60_000);
+      if (ttlMs > 0) {
+        setTimeout(() => {
+          if (previews.get(projectId) !== state) return;
+          state.stop();
+          previews.delete(projectId);
+        }, ttlMs).unref();
+      }
+    } catch (error) {
+      docker.stop();
+      previews.delete(projectId);
+      throw error;
+    }
+    return { url: `/preview/${token}/`, port };
+  }
+
   let child: ChildProcess;
   if (script) {
     child = spawn("npm", ["run", script], {
@@ -136,20 +290,25 @@ export async function startPreview(projectId: string, repoPath: string): Promise
     );
   }
 
-  let output = "";
   const collect = (chunk: Buffer) => {
     output = `${output}${chunk.toString()}`.slice(-8000);
-    const state = [...previews.values()].find((item) => item.process === child);
-    if (state) state.output = output;
+    state.output = output;
   };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
 
-  const token = randomBytes(18).toString("base64url");
-  const state: PreviewState = { projectId, token, port, process: child, startedAt: Date.now(), output };
+  state = {
+    projectId,
+    token,
+    port,
+    startedAt: Date.now(),
+    output,
+    alive: () => child.exitCode === null,
+    stop: () => killPreview(child),
+  };
   previews.set(projectId, state);
   try {
-    await waitForServer(port, child, () => output);
+    await waitForServer(port, () => child.exitCode === null, () => output);
   } catch (error) {
     killPreview(child);
     previews.delete(projectId);
@@ -157,8 +316,16 @@ export async function startPreview(projectId: string, repoPath: string): Promise
   }
   child.once("exit", () => {
     const current = previews.get(projectId);
-    if (current?.process === child) previews.delete(projectId);
+    if (current?.startedAt === state.startedAt) previews.delete(projectId);
   });
+  const ttlMs = Number(process.env.PREVIEW_TTL_MS ?? 30 * 60_000);
+  if (ttlMs > 0) {
+    setTimeout(() => {
+      if (previews.get(projectId) !== state) return;
+      state.stop();
+      previews.delete(projectId);
+    }, ttlMs).unref();
+  }
   return { url: `/preview/${token}/`, port };
 }
 
@@ -175,12 +342,12 @@ export function previewUrlForProject(projectId: string): string | null {
 export function stopPreview(projectId: string): void {
   const preview = previews.get(projectId);
   if (!preview) return;
-  killPreview(preview.process);
+  preview.stop();
   previews.delete(projectId);
 }
 
 export function stopAllPreviews(): void {
-  for (const preview of previews.values()) killPreview(preview.process);
+  for (const preview of previews.values()) preview.stop();
   previews.clear();
 }
 

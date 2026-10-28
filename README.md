@@ -173,6 +173,16 @@ RUNNER_PIDS_LIMIT=256
 
 使用前先拉取镜像，例如 `docker pull node:22-bookworm-slim`。Docker Hub 不可达时可用镜像站并设置 `RUNNER_IMAGE`。
 
+预览也可以放进容器：
+
+```env
+PREVIEW_MODE=docker
+# PREVIEW_IMAGE=node:22-bookworm-slim
+PREVIEW_TTL_MS=1800000
+```
+
+预览容器只发布到 `127.0.0.1`，默认 30 分钟 TTL，退出或超时会自动删除；仍使用同一个 worktree 挂载和资源限制。需要数据库或外部服务的项目仍建议先用 `PREVIEW_MODE=host`。
+
 ### 两种 Agent 运行时
 
 ```env
