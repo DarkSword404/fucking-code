@@ -63,7 +63,7 @@ const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
-  const [pendingApprovals, pendingArtifacts, pendingTasks] = await Promise.all([
+  const [pendingApprovals, pendingArtifacts] = await Promise.all([
     db
       .select({ id: approvals.id })
       .from(approvals)
@@ -74,25 +74,11 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       .from(artifacts)
       .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")))
       .limit(1),
-    db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.projectId, projectId),
-          inArray(tasks.status, ["review", "testing"]),
-        ),
-      )
-      .limit(1),
   ]);
-  // A proposed product decision is visible in the decision inbox but does not
-  // stop coding/testing. Only an explicit product approval or an in-review
-  // artifact blocks the queue.
-  return (
-    pendingApprovals.length > 0 ||
-    pendingArtifacts.length > 0 ||
-    pendingTasks.length > 0
-  );
+  // Proposed decisions and review/testing tasks are internal workflow states:
+  // they must not pause the queue. Review tasks are merged by the scheduler;
+  // merge conflicts are pushed back to ready by the merge handler.
+  return pendingApprovals.length > 0 || pendingArtifacts.length > 0;
 }
 
 /**
