@@ -727,6 +727,21 @@ export class Orchestrator {
           const engineeringAsk = Boolean(
             askAction?.question && isEngineeringTopic(askAction.question),
           );
+          const decisionAction = actions.find((action) => action.type === "propose_decision") as
+            | { title?: string; rationale?: string }
+            | undefined;
+          const approvalAction = actions.find((action) => action.type === "request_approval") as
+            | { targetType?: string; title?: string; reason?: string }
+            | undefined;
+          const clientQuestion = Boolean(askAction?.question && !engineeringAsk);
+          const clientDecision = Boolean(
+            decisionAction?.title &&
+              !isEngineeringTopic(`${decisionAction.title} ${decisionAction.rationale ?? ""}`),
+          );
+          const clientApproval = Boolean(
+            approvalAction?.title && /^product/i.test(approvalAction.targetType ?? ""),
+          );
+          const clientFacing = clientQuestion || clientDecision || clientApproval;
           const content = engineeringAsk
             ? `${result.text.replace(askAction!.question!, "").trim()}\n\n（工程执行细节由团队内部决定，不需要甲方确认。）`.trim()
             : askAction?.question &&
@@ -734,9 +749,20 @@ export class Orchestrator {
                 !/[?？]/.test(result.text)
               ? `${result.text}\n\n${askAction.question}`
               : result.text;
-          const clientQuestion = Boolean(askAction?.question && !engineeringAsk);
+          const clientPrompt = clientDecision
+            ? `产品决策待确认：${decisionAction!.title}\n${decisionAction!.rationale ?? ""}\n请回复「接受」或「不接受」，或在右侧产品决策中处理。`
+            : clientApproval
+              ? `产品审批待确认：${approvalAction!.title}\n${approvalAction!.reason ?? ""}\n请回复「批准」或「拒绝」，或在右侧产品审批中处理。`
+              : "";
+          const withPrompt =
+            clientFacing &&
+            clientPrompt &&
+            !(decisionAction?.title && content.includes(decisionAction.title)) &&
+            !(approvalAction?.title && content.includes(approvalAction.title))
+              ? `${content}\n\n${clientPrompt}`
+              : content;
           const finalContent =
-            clientQuestion && !content.includes("@甲方") ? `@甲方 ${content}` : content;
+            clientFacing && !withPrompt.includes("@甲方") ? `@甲方 ${withPrompt}` : withPrompt;
           const messageId = uuidv7();
           await insertMessage({
             id: messageId,
@@ -759,6 +785,7 @@ export class Orchestrator {
               parseErrors: result.metadata.parseErrors ?? [],
               actionTypes: actions.map((a) => a.type),
               chips: actionChips(actions),
+              clientQuestion: clientFacing,
             },
             runId: item.runId,
             replyToId: params.userMessageId,
@@ -832,7 +859,7 @@ export class Orchestrator {
             activeKeys.add(applied.handoffTo);
             forcedNext.set(applied.handoffTo, "收到同事的交接");
           }
-          if (applied.askedUser) waitingForUser = true;
+          if (applied.askedUser || clientFacing) waitingForUser = true;
         }
 
         if (!posted.length) break;

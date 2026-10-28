@@ -1397,6 +1397,87 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
   enforceDemoMessageLimit(user.id);
   const repoContext = await repoContextFor(project);
 
+  // A client can answer an @-mention in the room with "接受/不接受" or
+  // "批准/拒绝" instead of opening the decision inbox. Only resolve when the
+  // intent is unambiguous and there is exactly one pending product item.
+  const answer = body.content.trim();
+  const accept = /^(接受|同意|可以|批准|通过|approve|accept)/i.test(answer);
+  const reject = /^(拒绝|不接受|不同意|驳回|reject)/i.test(answer);
+  if ((accept || reject) && answer.length <= 120) {
+    const db = getDb();
+    const [pendingDecisionRows, pendingApprovalRows] = await Promise.all([
+      db
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.projectId, project.id), eq(decisions.status, "proposed")))
+        .limit(2),
+      db
+        .select()
+        .from(approvals)
+        .where(and(eq(approvals.projectId, project.id), eq(approvals.status, "pending")))
+        .limit(2),
+    ]);
+    const total = pendingDecisionRows.length + pendingApprovalRows.length;
+    if (total === 1) {
+      const emit = projectEmitter(project.tenantId, project.id);
+      let resolvedTitle = "";
+      if (pendingDecisionRows[0]) {
+        const decision = pendingDecisionRows[0];
+        await db
+          .update(decisions)
+          .set({
+            status: accept ? "accepted" : "rejected",
+            decidedBy: user.displayName,
+            decidedAt: new Date(),
+          })
+          .where(eq(decisions.id, decision.id));
+        resolvedTitle = decision.title;
+        await emit(EVENT_TYPES.decisionChanged, {
+          decisionId: decision.id,
+          action: accept ? "accepted" : "rejected",
+          title: decision.title,
+        });
+      } else if (pendingApprovalRows[0]) {
+        const approval = pendingApprovalRows[0];
+        await db
+          .update(approvals)
+          .set({
+            status: accept ? "approved" : "rejected",
+            decidedBy: user.displayName,
+            decidedAt: new Date(),
+          })
+          .where(eq(approvals.id, approval.id));
+        resolvedTitle = approval.title;
+        await emit(EVENT_TYPES.approvalChanged, {
+          approvalId: approval.id,
+          action: accept ? "approved" : "rejected",
+          title: approval.title,
+        });
+      }
+      if (resolvedTitle) {
+        const confirmationId = uuidv7();
+        await insertMessage({
+          id: confirmationId,
+          tenantId: project.tenantId,
+          projectId: project.id,
+          roomId: room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+          content: `已记录甲方决定：${accept ? "接受" : "拒绝"}「${resolvedTitle}」。自动开发会继续。`,
+          metadata: { kind: "client_confirmation_resolved", title: resolvedTitle },
+        });
+        await emit(EVENT_TYPES.messageCreated, {
+          messageId: confirmationId,
+          roomId: room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+        });
+      }
+    }
+  }
+
   const messageId = uuidv7();
   const message = await insertMessage({
     id: messageId,

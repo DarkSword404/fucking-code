@@ -8,7 +8,6 @@ import {
   approvals,
   captureAcceptedSpec,
   decisions,
-  insertMessage,
   memories,
   projects,
   tasks,
@@ -59,38 +58,6 @@ export interface ApplyResult {
 }
 
 const now = () => new Date();
-
-/** Notify the client only for genuine product decisions/approvals. */
-async function notifyClient(
-  ctx: ApplyContext,
-  input: { kind: "decision" | "approval"; id: string; title: string; detail?: string },
-): Promise<void> {
-  const messageId = uuidv7();
-  const label = input.kind === "decision" ? "产品决策待确认" : "产品审批待确认";
-  await insertMessage({
-    id: messageId,
-    tenantId: ctx.bundle.project.tenantId,
-    projectId: ctx.bundle.project.id,
-    roomId: ctx.bundle.room.id,
-    senderType: "system",
-    senderName: "系统",
-    type: "question",
-    content: `@甲方 ${label}：${input.title}${input.detail ? `\n${input.detail.slice(0, 800)}` : ""}`,
-    metadata: {
-      kind: "client_confirmation",
-      confirmationKind: input.kind,
-      decisionId: input.kind === "decision" ? input.id : undefined,
-      approvalId: input.kind === "approval" ? input.id : undefined,
-    },
-  });
-  await ctx.emit(EVENT_TYPES.messageCreated, {
-    messageId,
-    roomId: ctx.bundle.room.id,
-    senderType: "system",
-    senderName: "系统",
-    type: "question",
-  });
-}
 
 /** Phase transitions are internal; only product decisions/approvals notify the client. */
 function orderedActions(actions: ValidatedAgentAction[]): ValidatedAgentAction[] {
@@ -410,13 +377,6 @@ export async function applyActions(
           });
           if (internal) {
             result.notes.push(`engineering decision auto-accepted internally: ${a.title}`);
-          } else {
-            await notifyClient(ctx, {
-              kind: "decision",
-              id,
-              title: a.title,
-              detail: a.rationale,
-            });
           }
           break;
         }
@@ -466,13 +426,6 @@ export async function applyActions(
           });
           if (!clientFacing) {
             result.notes.push(`engineering approval auto-approved internally: ${a.title}`);
-          } else {
-            await notifyClient(ctx, {
-              kind: "approval",
-              id,
-              title: a.title,
-              detail: a.reason,
-            });
           }
           break;
         }

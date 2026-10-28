@@ -64,7 +64,7 @@ const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
-  const [pendingApprovals, pendingArtifacts] = await Promise.all([
+  const [pendingApprovals, pendingArtifacts, proposedDecisions] = await Promise.all([
     db
       .select({ id: approvals.id })
       .from(approvals)
@@ -75,11 +75,20 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       .from(artifacts)
       .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")))
       .limit(1),
+    db
+      .select({ id: decisions.id })
+      .from(decisions)
+      .where(and(eq(decisions.projectId, projectId), eq(decisions.status, "proposed")))
+      .limit(1),
   ]);
-  // Proposed decisions and review/testing tasks are internal workflow states:
-  // they must not pause the queue. Review tasks are merged by the scheduler;
-  // merge conflicts are pushed back to ready by the merge handler.
-  return pendingApprovals.length > 0 || pendingArtifacts.length > 0;
+  // Engineering decisions are auto-accepted, so only genuine product decisions
+  // remain proposed. Those intentionally wait for the client; review/testing
+  // tasks stay internal and do not block.
+  return (
+    pendingApprovals.length > 0 ||
+    pendingArtifacts.length > 0 ||
+    proposedDecisions.length > 0
+  );
 }
 
 /**
@@ -1372,9 +1381,11 @@ export function startAutoDevelopmentLoop(): void {
   setTimeout(() => {
     mergeReviewed();
     nudgeGates();
-    heartbeat();
     void autoStartAll();
   }, 4_000).unref();
+  // Give the service and its preview one startup window before the first
+  // operations heartbeat, otherwise a restart can look like a health incident.
+  setTimeout(heartbeat, 3 * 60_000).unref();
   setInterval(() => {
     mergeReviewed();
     nudgeGates();
