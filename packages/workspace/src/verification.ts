@@ -1,4 +1,4 @@
-import { opencodeFetch } from "@devteam/agents";
+import { createModelGateway } from "@devteam/agents";
 
 export interface VerificationCheck {
   criterion: string;
@@ -118,24 +118,23 @@ export async function verifyWork(input: {
     `## 测试输出\n${input.testOutput.slice(0, maxTestChars)}`,
   ].join("\n");
 
-  const response = await opencodeFetch<{ data?: { text?: string } }>(
-    "/api/experimental/generate",
-    {
-      method: "POST",
-      body: JSON.stringify({ prompt, model }),
+  try {
+    const gateway = createModelGateway();
+    const text = await gateway.generateText({
+      system: "You are QA. Return only the verification JSON object requested below.",
+      prompt,
+      model: { providerID: model.providerID, id: model.id },
       timeoutMs: Number(process.env.VERIFY_TIMEOUT_MS ?? 240_000),
-    },
-  );
-
-  if (!response.ok) {
+    });
+    return parseVerification(text);
+  } catch (error) {
     return {
       verdict: "unverified",
       checks: [],
-      missing: [`规格核对调用失败（${response.status}）`],
-      raw: response.raw.slice(0, 2000),
+      missing: [
+        `规格核对调用失败：${error instanceof Error ? error.message : String(error)}`,
+      ],
+      raw: "",
     };
   }
-
-  const text = (response.data as { data?: { text?: string } } | null)?.data?.text ?? "";
-  return parseVerification(text);
 }

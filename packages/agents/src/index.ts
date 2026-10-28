@@ -1,4 +1,5 @@
 export * from "./runtime.js";
+export * from "./gateway.js";
 export * from "./opencode-client.js";
 export * from "./attention.js";
 export * from "./context.js";

@@ -122,6 +122,22 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright ./scripts
 
 没有浏览器时，workbench 仍可用 shell/HTTP 做接口级验证，但 UI 走查项必须标「未覆盖」。
 
+### 模型网关与 OpenCode 解耦
+
+聊天、注意力和规格核对已经通过 `MODEL_GATEWAY` 访问模型，不再直接依赖 OpenCode session：
+
+```env
+# 复用本机 OpenCode 套餐作为推理网关
+MODEL_GATEWAY=opencode
+
+# 或使用任意 OpenAI-compatible API
+MODEL_GATEWAY=openai
+MODEL_API_BASE_URL=https://api.openai.com/v1
+MODEL_API_KEY=...
+```
+
+代码任务的内置执行器还在实验阶段；当前生产路径仍可用 OpenCode 工位。
+
 ### 两种 Agent 运行时
 
 ```env

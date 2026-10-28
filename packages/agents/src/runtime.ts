@@ -1,6 +1,6 @@
 import type { AgentTurnResult, WorkflowPhase } from "@devteam/contracts";
 import { parseAgentOutput } from "@devteam/domain";
-import { opencodeFetch } from "./opencode-client.js";
+import { createModelGateway, type ModelGateway } from "./gateway.js";
 import { heuristicAttention, parseAttentionDecision } from "./attention.js";
 
 export interface GenerateRequest {
@@ -50,10 +50,12 @@ export class OpenCodeRuntime implements AgentRuntime {
   readonly name = "opencode";
   private provider: string;
   private modelId: string;
+  private gateway: ModelGateway;
 
-  constructor(options?: { provider?: string; modelId?: string }) {
+  constructor(options?: { provider?: string; modelId?: string; gateway?: ModelGateway }) {
     this.provider = options?.provider ?? process.env.AGENT_MODEL_PROVIDER ?? "opencode-go";
     this.modelId = options?.modelId ?? process.env.AGENT_MODEL_ID ?? "deepseek-v4.1-flash";
+    this.gateway = options?.gateway ?? createModelGateway();
   }
 
   async generate(request: GenerateRequest): Promise<AgentTurnResult> {
@@ -61,27 +63,13 @@ export class OpenCodeRuntime implements AgentRuntime {
     const model = request.model ?? { providerID: this.provider, id: this.modelId };
     const timeoutMs = request.roleKey === "architect" ? 180_000 : 90_000;
 
-    const response = await opencodeFetch<{ data?: { text?: string }; message?: string }>(
-      "/api/experimental/generate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          prompt: `${request.system}\n\n---\n\n${request.prompt}`,
-          model,
-        }),
-        signal: request.signal,
-        timeoutMs,
-      },
-    );
-
-    if (!response.ok) {
-      const parsed = response.data as { message?: string; _tag?: string } | null;
-      const message = parsed?.message ?? parsed?._tag ?? response.raw.slice(0, 500);
-      throw new Error(`OpenCode generate failed (${response.status}): ${message}`);
-    }
-
-    const text = (response.data as { data?: { text?: string } } | null)?.data?.text ?? "";
-    if (!text.trim()) throw new Error("OpenCode generate returned empty text");
+    const text = await this.gateway.generateText({
+      system: request.system,
+      prompt: request.prompt,
+      model,
+      signal: request.signal,
+      timeoutMs,
+    });
 
     const parsed = parseAgentOutput(text);
     return {
@@ -105,23 +93,13 @@ export class OpenCodeRuntime implements AgentRuntime {
     const id = process.env.ATTENTION_MODEL_ID ?? "mimo-v2.6-flash";
     const model = { providerID: provider, id };
 
-    const response = await opencodeFetch<{ data?: { text?: string }; message?: string }>(
-      "/api/experimental/generate",
-      {
-        method: "POST",
-        body: JSON.stringify({ prompt: request.prompt, model }),
-        signal: request.signal,
-        timeoutMs: 45_000,
-      },
-    );
-
-    if (!response.ok) {
-      const parsed = response.data as { message?: string; _tag?: string } | null;
-      throw new Error(
-        `attention generate failed (${response.status}): ${parsed?.message ?? response.raw.slice(0, 300)}`,
-      );
-    }
-    const text = (response.data as { data?: { text?: string } } | null)?.data?.text ?? "";
+    const text = await this.gateway.generateText({
+      system: "You are the attention router. Reply with PASS or SPEAK: reason.",
+      prompt: request.prompt,
+      model,
+      signal: request.signal,
+      timeoutMs: 45_000,
+    });
     const decision = parseAttentionDecision(text);
     return {
       speak: decision.speak,
