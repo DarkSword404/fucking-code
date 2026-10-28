@@ -24,6 +24,7 @@ import {
   workspaceChangedFiles,
   workspaceDiff,
 } from "./manager.js";
+import { runBuiltinAgent } from "./builtin-agent.js";
 import { verifyWork, type VerificationResult } from "./verification.js";
 
 export type EmitFn = (type: string, payload: Record<string, unknown>) => Promise<void>;
@@ -683,6 +684,171 @@ async function finalizeWork(input: {
     });
 }
 
+async function runBuiltinTaskWork(input: {
+  project: typeof projects.$inferSelect;
+  task: typeof tasks.$inferSelect;
+  workspace: typeof workspaces.$inferSelect;
+  room: typeof rooms.$inferSelect;
+  role: typeof agentRoles.$inferSelect;
+  qaRole: typeof agentRoles.$inferSelect;
+  runId: string;
+  taskSpec: TaskSpec | null;
+  specText: string;
+  provider: string;
+  modelId: string;
+  emit: EmitFn;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const db = getDb();
+  const memoryRows = await db
+    .select()
+    .from(memories)
+    .where(and(eq(memories.projectId, input.project.id), eq(memories.status, "accepted")))
+    .orderBy(desc(memories.updatedAt))
+    .limit(10);
+  if (memoryRows.length) {
+    await db
+      .update(memories)
+      .set({ updatedAt: new Date() })
+      .where(inArray(memories.id, memoryRows.map((memory) => memory.id)));
+  }
+  const memoryContext = memoryRows
+    .map((memory) => `- [${memory.type}] ${memory.title}：${memory.content.slice(0, 600)}`)
+    .join("\n");
+
+  const agent = await runBuiltinAgent({
+    root: input.workspace.path,
+    taskTitle: input.task.title,
+    taskDescription:
+      input.task.description + (memoryContext ? `\n\n## Project memory\n${memoryContext}` : ""),
+    acceptance: input.task.acceptance,
+    specText: input.specText,
+    previousFailure: input.task.blockedReason ?? undefined,
+    model: { providerID: input.provider, id: input.modelId },
+    signal: input.signal,
+    onProgress: async (tool) => {
+      await db
+        .update(agentRuns)
+        .set({
+          metadata: {
+            kind: "code",
+            taskId: input.task.id,
+            workspaceId: input.workspace.id,
+            executor: "builtin",
+            progress: tool,
+          },
+        })
+        .where(eq(agentRuns.id, input.runId));
+      await input.emit(EVENT_TYPES.runStatusChanged, {
+        runId: input.runId,
+        roleKey: input.role.key,
+        roleName: input.role.displayName,
+        status: "running",
+        kind: "code",
+        taskId: input.task.id,
+        progress: tool,
+      });
+    },
+  });
+
+  const testCommand = await detectTestCommand(input.workspace.path);
+  const testResult = testCommand
+    ? await runCommand(input.workspace.path, testCommand, 180_000, {
+        network: process.env.CODE_TASK_NETWORK === "1",
+      })
+    : null;
+  let testRunId: string | null = null;
+  if (testResult) {
+    testRunId = uuidv7();
+    await db.insert(testRuns).values({
+      id: testRunId,
+      projectId: input.project.id,
+      workspaceId: input.workspace.id,
+      command: testResult.command,
+      exitCode: testResult.exitCode,
+      status: testResult.status,
+      output: testResult.output.slice(0, 50_000),
+      durationMs: testResult.durationMs,
+    });
+  }
+
+  const diff = await workspaceDiff(input.workspace.path, input.workspace.baseCommit);
+  const changed = (await workspaceChangedFiles(input.workspace.path, input.workspace.baseCommit)).map(
+    (file) => `${file.status} ${file.path}`,
+  );
+  const workspaceContext = `Changed files:\n${
+    changed.length ? changed.join("\n") : "(none)"
+  }\nAll other files are unchanged from the base commit.`;
+
+  let verification: VerificationResult | null = null;
+  if (input.specText) {
+    try {
+      verification = await verifyWork({
+        taskTitle: input.task.title,
+        taskDescription: input.task.description,
+        taskAcceptance: input.task.acceptance,
+        spec: input.specText,
+        diff,
+        workspaceContext,
+        testOutput: testResult
+          ? `${testResult.command}\nexit ${testResult.exitCode}\n${testResult.output}`
+          : "not run",
+        model: {
+          providerID: input.qaRole.modelProvider ?? input.provider,
+          id: input.qaRole.modelId ?? input.modelId,
+        },
+      });
+    } catch (error) {
+      verification = {
+        verdict: "unverified",
+        checks: [],
+        missing: [error instanceof Error ? error.message : String(error)],
+        raw: "",
+      };
+    }
+  }
+
+  await finalizeWork({
+    project: input.project,
+    task: input.task,
+    workspace: input.workspace,
+    room: input.room,
+    role: input.role,
+    qaRole: input.qaRole,
+    runId: input.runId,
+    taskSpec: input.taskSpec,
+    testResult,
+    testRunId,
+    verification,
+    diff,
+    summary: agent.summary,
+    transcript: agent.transcript,
+    outcome: agent.outcome,
+    sessionId: null,
+    toolCalls: agent.toolCalls,
+    info: { executor: "builtin", steps: agent.toolCalls },
+    emit: input.emit,
+    mode: "code",
+  });
+  await db
+    .update(agentRuns)
+    .set({
+      status: agent.outcome === "succeeded" ? "succeeded" : "failed",
+      endedAt: new Date(),
+      metadata: {
+        kind: "code",
+        taskId: input.task.id,
+        workspaceId: input.workspace.id,
+        executor: "builtin",
+        outcome: agent.outcome,
+        toolCalls: agent.toolCalls,
+        testStatus: testResult?.status ?? "not_run",
+        verification: verification?.verdict ?? null,
+      },
+    })
+    .where(eq(agentRuns.id, input.runId));
+}
+
 /**
  * Runs one task in an isolated worktree through an OpenCode session, then
  * captures the diff and test evidence. This is intentionally explicit: the
@@ -758,6 +924,27 @@ export async function runTaskWork(input: WorkRunInput): Promise<void> {
 
   let sessionId: string | null = null;
   try {
+    if (
+      (process.env.CODE_EXECUTOR ?? "opencode").toLowerCase() === "builtin" &&
+      task.mode !== "workbench"
+    ) {
+      await runBuiltinTaskWork({
+        project,
+        task,
+        workspace,
+        room,
+        role,
+        qaRole,
+        runId,
+        taskSpec,
+        specText,
+        provider,
+        modelId,
+        emit: input.emit,
+        signal: input.signal,
+      });
+      return;
+    }
     const created = await opencodeFetch<{ data: { id: string } }>("/api/session", {
       method: "POST",
       body: JSON.stringify({
