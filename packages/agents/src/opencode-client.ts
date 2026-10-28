@@ -40,6 +40,12 @@ export function servicePassword(): string | null {
   }
 }
 
+/** Clear URL/auth caches after login or service restart. */
+export function resetOpenCodeClientCache(): void {
+  cachedUrl = null;
+  cachedAuth = undefined;
+}
+
 let cachedAuth: string | null | undefined;
 
 export function authHeader(): string | null {

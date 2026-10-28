@@ -66,16 +66,25 @@ journalctl -u fucking-code.service -f
 
 ## 3. OpenCode 登录兼容
 
-OpenCode 的订阅凭据存在 `~/.local/share/opencode`（数据库内），不是公开 API key。新服务器有三种方式：
+OpenCode 的订阅凭据存在 `~/.local/share/opencode`（数据库内），不是公开 API key。新服务器有三种方式。
 
-### A. 在新服务器重新登录（推荐）
+### A. 网页验证（推荐，无头服务器）
 
-```bash
-opencode auth login
-opencode auth list
+安装完成后直接启动应用，用管理员账号登录，打开：
+
+```text
+管理后台 → OpenCode → 开始网页验证
 ```
 
-需要能打开浏览器或按 CLI 提示完成设备授权。
+页面会显示验证码和 `https://opencode.ai/console/device?...` 地址。用手机或电脑打开地址、输入验证码即可。服务器不需要浏览器，也不会卡在 CLI TUI。
+
+登录成功后应用会自动重启 OpenCode 网关，返回聊天页即可使用。对应 API：
+
+```text
+POST /api/v1/admin/opencode/auth/start
+GET  /api/v1/admin/opencode/auth
+POST /api/v1/admin/opencode/auth/cancel
+```
 
 ### B. 从旧服务器导出/导入
 
@@ -91,6 +100,13 @@ scp /tmp/opencode-auth.json user@new-host:/tmp/
 ```bash
 ./scripts/opencode-auth.sh import /tmp/opencode-auth.json
 rm /tmp/opencode-auth.json
+```
+
+如果服务器有浏览器/终端，也可以直接 CLI 登录：
+
+```bash
+opencode auth login
+opencode auth list
 ```
 
 注意：导出文件是**明文凭据**，必须用 `scp/ssh` 传输、`chmod 600`，不要提交、不要放迁移包。安装脚本也支持：

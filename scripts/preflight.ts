@@ -111,11 +111,21 @@ async function main(): Promise<void> {
       const status = command("opencode", ["service", "status"], 15_000);
       const serviceUrl = status?.match(/https?:\/\/[^\s]+/)?.[0] ?? null;
       if (serviceUrl) add("ok", "OpenCode 服务", serviceUrl);
-      else add("fail", "OpenCode 服务", "未运行；执行 opencode service start");
+      else
+        add(
+          "warn",
+          "OpenCode 服务",
+          "未运行；执行 opencode service start，或在管理后台完成网页验证后自动重启",
+        );
 
       const auth = command("opencode", ["auth", "list"], 15_000);
       if (auth && /stored|已存储|已登录/i.test(auth)) add("ok", "OpenCode 登录", "存在已存储凭据");
-      else add("fail", "OpenCode 登录", "未登录；执行 opencode auth login（或 opencode auth import）");
+      else
+        add(
+          "warn",
+          "OpenCode 登录",
+          "未登录；启动后在管理后台 → OpenCode 用网页验证完成（也可以 opencode auth import）",
+        );
 
       const models = command("opencode", ["models"], 20_000);
       if (models) {

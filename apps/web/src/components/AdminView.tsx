@@ -1,5 +1,5 @@
-import { For, Show, createSignal, onMount } from "solid-js";
-import type { AdminInvite, AdminProject, AdminUser } from "../lib/api";
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { api, type AdminInvite, type AdminProject, type AdminUser, type OpenCodeAuthState } from "../lib/api";
 import {
   adminCreateInvite,
   adminDeleteProject,
@@ -17,10 +17,11 @@ import {
   toast,
 } from "../lib/store";
 
-type Tab = "overview" | "users" | "projects" | "invites";
+type Tab = "overview" | "opencode" | "users" | "projects" | "invites";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "overview", label: "概览" },
+  { key: "opencode", label: "OpenCode" },
   { key: "users", label: "用户" },
   { key: "projects", label: "项目" },
   { key: "invites", label: "邀请码" },
@@ -37,10 +38,51 @@ export function AdminView() {
   const [label, setLabel] = createSignal("");
   const [maxUses, setMaxUses] = createSignal(1);
   const [days, setDays] = createSignal(7);
+  const [ocState, setOcState] = createSignal<OpenCodeAuthState | null>(null);
+  const [ocBusy, setOcBusy] = createSignal(false);
+  let ocTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const pollOpenCode = async () => {
+    try {
+      const state = await api.opencodeAuthStatus();
+      setOcState(state);
+      if (state.status === "pending") {
+        ocTimer = setTimeout(() => void pollOpenCode(), 2000);
+      }
+    } catch {
+      // Admin may have no access yet; the tab simply stays empty.
+    }
+  };
 
   onMount(() => {
     void loadAdmin();
+    void pollOpenCode();
   });
+
+  onCleanup(() => {
+    if (ocTimer) clearTimeout(ocTimer);
+  });
+
+  const startOpenCodeAuth = async () => {
+    setOcBusy(true);
+    try {
+      const state = await api.opencodeAuthStart();
+      setOcState(state);
+      if (state.status === "pending") void pollOpenCode();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "启动 OpenCode 登录失败");
+    } finally {
+      setOcBusy(false);
+    }
+  };
+
+  const cancelOpenCodeAuth = async () => {
+    try {
+      setOcState(await api.opencodeAuthCancel());
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "取消失败");
+    }
+  };
 
   const isSelf = (user: AdminUser) => user.id === authUser()?.id;
 
@@ -134,6 +176,52 @@ export function AdminView() {
           </div>
           <div class="gate-note">
             只有管理员能进入这个页面。普通用户看不到入口，直接调用管理 API 也会被服务端拒绝。
+          </div>
+        </Show>
+
+        <Show when={!adminLoading() && tab() === "opencode"}>
+          <div class="panel">
+            <div class="panel-title">OpenCode 网页验证</div>
+            <p class="gate-note">
+              服务器没有浏览器时，用手机或电脑打开验证地址，输入下面的验证码即可完成登录。
+              不需要在服务器终端里操作 TUI。
+            </p>
+            <Show
+              when={ocState()?.status === "pending"}
+              fallback={
+                <button class="btn primary" disabled={ocBusy()} onClick={() => void startOpenCodeAuth()}>
+                  {ocBusy() ? "启动中…" : "开始网页验证"}
+                </button>
+              }
+            >
+              <div class="gate-note" style={{ "font-size": "18px", "margin": "12px 0" }}>
+                验证码：<strong>{ocState()?.code ?? "等待生成…"}</strong>
+              </div>
+              <Show when={ocState()?.url}>
+                <a
+                  class="btn primary"
+                  href={ocState()!.url!}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ "text-decoration": "none", "margin-right": "8px" }}
+                >
+                  打开 OpenCode 验证页
+                </a>
+              </Show>
+              <button class="btn" onClick={() => void cancelOpenCodeAuth()}>
+                取消
+              </button>
+            </Show>
+            <Show when={ocState()}>
+              <p class="admin-muted" style={{ "margin-top": "12px" }}>
+                状态：{ocState()!.status} · {ocState()!.message}
+              </p>
+              <Show when={ocState()!.status === "authorized"}>
+                <p class="gate-note">
+                  登录成功。OpenCode 网关会自动重启，返回聊天页即可继续。
+                </p>
+              </Show>
+            </Show>
           </div>
         </Show>
 

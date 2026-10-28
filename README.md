@@ -88,7 +88,7 @@ Fucking Code 是一个以共享聊天室为核心的 AI 研发工作台。你以
 ./start.sh --doctor
 ```
 
-它会安装系统依赖、Node、OpenCode、Chromium，创建 `.env`，同步 OpenCode 实际端口，初始化管理员账号并构建前端。完整步骤和 OpenCode 登录迁移见 [服务器部署](docs/deploy/server.md)。
+它会安装系统依赖、Node、OpenCode、Chromium，创建 `.env`，同步 OpenCode 实际端口，初始化管理员账号并构建前端。无头服务器不需要在终端登录 OpenCode：启动后打开「管理后台 → OpenCode → 开始网页验证」，用手机/电脑输入验证码即可。完整步骤见 [服务器部署](docs/deploy/server.md)。
 
 `start.sh` 会自动检查 Node 版本、首次安装依赖、从 `.env.example` 复制 `.env`、检测 OpenCode 服务与登录、构建前端并启动。打开 <http://127.0.0.1:8787>。需要热更新时用 `./start.sh --dev`，打开 <http://127.0.0.1:5174>。
 

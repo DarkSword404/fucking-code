@@ -109,6 +109,12 @@ import { createProjectForUser } from "./provision.js";
 import { buildProjectPackage } from "./export.js";
 import { handleGitHttp } from "./git-host.js";
 import { syncProjectRepo } from "./repo-sync.js";
+import {
+  cancelOpenCodeAuth,
+  getOpenCodeAuthState,
+  refreshOpenCodeAuthState,
+  startOpenCodeAuth,
+} from "./opencode-auth.js";
 import { buildSnapshot, roomFor } from "./snapshot.js";
 import {
   previewForToken,
@@ -488,6 +494,26 @@ function safeUser(user: UserRow) {
   const { passwordHash: _passwordHash, ...rest } = user;
   return rest;
 }
+
+app.get("/api/v1/admin/opencode/auth", async (c) => {
+  requireAdmin(c);
+  return c.json(await refreshOpenCodeAuthState());
+});
+
+app.post("/api/v1/admin/opencode/auth/start", async (c) => {
+  requireAdmin(c);
+  return c.json(await startOpenCodeAuth());
+});
+
+app.post("/api/v1/admin/opencode/auth/cancel", async (c) => {
+  requireAdmin(c);
+  return c.json(await cancelOpenCodeAuth());
+});
+
+app.get("/api/v1/admin/opencode/auth/current", (c) => {
+  requireAdmin(c);
+  return c.json(getOpenCodeAuthState());
+});
 
 app.get("/api/v1/admin/stats", async (c) => {
   requireAdmin(c);

@@ -80,6 +80,15 @@ export interface AdminInvite {
   createdAt: string;
 }
 
+export interface OpenCodeAuthState {
+  status: "idle" | "pending" | "authorized" | "failed" | "cancelled" | "timeout";
+  code: string | null;
+  url: string | null;
+  message: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
 export interface RepoSyncResult {
   pushed: boolean;
   skipped: boolean;
@@ -404,6 +413,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  opencodeAuthStatus: () => request<OpenCodeAuthState>("/admin/opencode/auth"),
+  opencodeAuthStart: () =>
+    request<OpenCodeAuthState>("/admin/opencode/auth/start", { method: "POST" }),
+  opencodeAuthCancel: () =>
+    request<OpenCodeAuthState>("/admin/opencode/auth/cancel", { method: "POST" }),
   adminStats: () => request<AdminStats>("/admin/stats"),
   adminUsers: () => request<{ items: AdminUser[] }>("/admin/users"),
   adminProjects: () => request<{ items: AdminProject[] }>("/admin/projects"),

@@ -154,12 +154,9 @@ if [ -n "$OPENCODE_AUTH_FILE" ]; then
   say "Importing OpenCode credentials…"
   run_as_user env HOME="$RUN_HOME" "$OPENCODE_BIN" auth import "$OPENCODE_AUTH_FILE"
 elif ! run_as_user env HOME="$RUN_HOME" "$OPENCODE_BIN" auth list 2>/dev/null | grep -qiE 'stored|已存储|已登录'; then
-  if [ -t 0 ]; then
-    say "OpenCode is not logged in; starting interactive login…"
-    run_as_user env HOME="$RUN_HOME" "$OPENCODE_BIN" auth login
-  else
-    fail "OpenCode is not logged in. Run: opencode auth login  (or pass --opencode-auth=file.json)"
-  fi
+  warn "OpenCode is not logged in yet. The installer will continue without blocking."
+  warn "After the app starts, log in at: 管理后台 → OpenCode → 开始网页验证"
+  warn "Or import credentials with: --opencode-auth=/path/to/auth.json"
 fi
 
 say "Starting OpenCode service…"
@@ -251,4 +248,5 @@ if [ "$WITH_SYSTEMD" = "1" ]; then
 else
   warn "No systemd units installed; use ./start.sh --server or re-run with --systemd."
 fi
+say "OpenCode login (if not already configured): ${PUBLIC_URL:-http://127.0.0.1:8787}/admin → OpenCode → 开始网页验证"
 warn "OpenCode auth is stored under $RUN_HOME/.local/share/opencode; back it up securely if you migrate hosts."

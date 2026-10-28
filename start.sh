@@ -148,7 +148,8 @@ if [ "$GATEWAY" = "opencode" ]; then
     warn "Could not detect the OpenCode service URL; check: opencode service status"
   fi
   if ! opencode auth list 2>/dev/null | grep -qiE 'stored|已存储|已登录'; then
-    fail "OpenCode is not logged in. Run: opencode auth login  (or import credentials with: opencode auth import <file>)"
+    warn "OpenCode is not logged in yet. Start the app, open 管理后台 → OpenCode, and use the web device-code flow."
+    warn "Alternatively import credentials: scripts/opencode-auth.sh import <file>"
   fi
 fi
 
