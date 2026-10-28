@@ -12,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dockerRunCommand } from "./docker-runner.js";
 import { git, gitSafe, gitWithEnv } from "./git.js";
 
 export interface WorkspaceInfo {
@@ -683,6 +684,20 @@ export async function runCommand(
       output: "Mutating git branch operations are not allowed in this runner.",
       durationMs: 0,
     };
+  }
+
+  if (
+    (process.env.RUNNER_MODE ?? "host").toLowerCase() === "docker" &&
+    binName !== "git"
+  ) {
+    return dockerRunCommand({
+      root,
+      command,
+      bin: binName,
+      args: parts.slice(1),
+      timeoutMs,
+      network: options.network === true,
+    });
   }
 
   const sandbox = (process.env.SANDBOX_MODE ?? "process") === "bwrap" && binName !== "git";

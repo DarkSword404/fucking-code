@@ -149,6 +149,30 @@ CODE_AGENT_MAX_STEPS=20
 
 尚未迁移：QA / 安全 / 部署 / 运维的 workbench 仍使用 OpenCode session 的浏览器与网络工具；这些任务暂时还需要 OpenCode。
 
+### Docker 命令隔离
+
+代码任务里的 `npm test` / build / lint 等命令可以放进一次性容器执行，避免多项目共享宿主机环境：
+
+```env
+RUNNER_MODE=docker
+# 默认按仓库内容选 node:22-bookworm-slim 或 python:3.12-slim
+# RUNNER_IMAGE=node:22-bookworm-slim
+RUNNER_MEMORY=1g
+RUNNER_CPUS=2
+RUNNER_PIDS_LIMIT=256
+```
+
+隔离边界：
+
+- 只挂载当前 worktree 到 `/workspace`，不挂宿主机根目录；
+- 默认 `--network none`，需要联网的依赖安装在显式允许时走 `bridge`；
+- `--memory` / `--cpus` / `--pids-limit` 限制资源；
+- 超时会强制删除容器；
+- 容器内使用宿主 uid/gid，避免生成 root 所有的文件；
+- `git` 命令仍在宿主机执行，不进入容器。
+
+使用前先拉取镜像，例如 `docker pull node:22-bookworm-slim`。Docker Hub 不可达时可用镜像站并设置 `RUNNER_IMAGE`。
+
 ### 两种 Agent 运行时
 
 ```env
