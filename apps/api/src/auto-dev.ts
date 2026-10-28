@@ -59,6 +59,7 @@ const lastPhaseNudge = new Map<string, number>();
 const lastGateNotice = new Map<string, number>();
 const lastTriageNudge = new Map<string, number>();
 const triageLocks = new Set<string>();
+const lastOpsHeartbeat = new Map<string, number>();
 const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
@@ -1212,6 +1213,146 @@ async function nudgeAllPhaseGates(): Promise<void> {
   }
 }
 
+/**
+ * Operations is a persistent state, not a terminal phase. Do a low-frequency
+ * health/preview sweep so the room does not look dead, and create an internal
+ * DevOps workbench task when the running service actually breaks.
+ */
+async function operationsHeartbeat(project: ProjectRow): Promise<void> {
+  const last = lastOpsHeartbeat.get(project.id) ?? 0;
+  if (Date.now() - last < 30 * 60_000) return;
+  const [room] = await getDb().select().from(rooms).where(eq(rooms.projectId, project.id)).limit(1);
+  if (!room || roomQueue.isRunning(room.id)) return;
+  const workspaceRows = await getDb()
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.projectId, project.id));
+  if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
+
+  lastOpsHeartbeat.set(project.id, Date.now());
+  const port = process.env.PORT ?? "8788";
+  const healthStatus = await fetch(`http://127.0.0.1:${port}/health`, {
+    signal: AbortSignal.timeout(4_000),
+  })
+    .then((response) => response.status)
+    .catch(() => 0);
+
+  let previewUrl = previewUrlForProject(project.id);
+  let previewStatus = 0;
+  if (!previewUrl && project.repoPath) {
+    try {
+      previewUrl = (await startPreview(project.id, project.repoPath)).url;
+    } catch {
+      previewUrl = null;
+    }
+  }
+  if (previewUrl) {
+    previewStatus = await fetch(`http://127.0.0.1:${port}${previewUrl}`, {
+      signal: AbortSignal.timeout(4_000),
+    })
+      .then((response) => response.status)
+      .catch(() => 0);
+  }
+
+  const healthy = healthStatus === 200 && (!previewUrl || previewStatus === 200);
+  const messageId = uuidv7();
+  if (healthy) {
+    await insertMessage({
+      id: messageId,
+      tenantId: project.tenantId,
+      projectId: project.id,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+      content: [
+        "运维巡检正常。",
+        `- /health：${healthStatus}`,
+        previewUrl ? `- 预览：${previewStatus}（${previewUrl}）` : "- 预览：未运行",
+        "- 当前没有待处理异常。",
+      ].join("\n"),
+      metadata: { kind: "ops_heartbeat", healthStatus, previewStatus, previewUrl },
+    });
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+      messageId,
+      roomId: room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+    });
+    return;
+  }
+
+  const openTasks = await getDb()
+    .select({ id: tasks.id, title: tasks.title })
+    .from(tasks)
+    .where(and(eq(tasks.projectId, project.id), inArray(tasks.status, ["ready", "in_progress", "review", "blocked"])));
+  const already = openTasks.some((task) => task.title.startsWith("运维异常："));
+  let taskNote = "";
+  if (!already) {
+    const taskId = uuidv7();
+    await getDb().insert(tasks).values({
+      id: taskId,
+      projectId: project.id,
+      title: "运维异常：服务或预览健康检查失败",
+      description: [
+        "运维巡检发现异常，自动创建 workbench 取证单。",
+        `- /health：${healthStatus}`,
+        previewUrl ? `- 预览：${previewStatus}（${previewUrl}）` : "- 预览：未运行或启动失败",
+        "",
+        "请定位服务、预览进程、反代或配置问题；修复后复验 /health 与预览根路径，并回贴原始输出。不要修改业务代码，不要问甲方。",
+      ].join("\n"),
+      status: "ready",
+      mode: "workbench",
+      priority: "high",
+      roleKey: "devops",
+      acceptance: [
+        "定位并修复健康检查/预览故障",
+        "复验 /health 与预览根路径返回 200",
+        "回贴原始命令、响应和剩余风险",
+      ],
+      evidence: { kind: "ops_heartbeat_alert", healthStatus, previewStatus },
+    });
+    taskNote = " 已创建 DevOps workbench 任务。";
+  }
+  await insertMessage({
+    id: messageId,
+    tenantId: project.tenantId,
+    projectId: project.id,
+    roomId: room.id,
+    senderType: "system",
+    senderName: "系统",
+    type: "system_event",
+    content: [
+      "运维巡检发现异常。",
+      `- /health：${healthStatus}`,
+      previewUrl ? `- 预览：${previewStatus}（${previewUrl}）` : "- 预览：未运行或启动失败",
+      taskNote.trim(),
+    ].join("\n"),
+    metadata: { kind: "ops_alert", healthStatus, previewStatus, previewUrl },
+  });
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+    messageId,
+    roomId: room.id,
+    senderType: "system",
+    senderName: "系统",
+    type: "system_event",
+  });
+  if (!already) void autoStartNext(project.id);
+}
+
+async function operationsHeartbeatAll(): Promise<void> {
+  const rows = await getDb()
+    .select()
+    .from(projects)
+    .where(and(eq(projects.phase, "operations"), eq(projects.autoStartTasks, true)));
+  for (const project of rows) {
+    await operationsHeartbeat(project).catch((error) => {
+      console.error("[auto-dev] operations heartbeat failed", error);
+    });
+  }
+}
+
 export function startAutoDevelopmentLoop(): void {
   const mergeReviewed = () => {
     void mergeInternallyReviewedTasks().catch((error) => {
@@ -1223,9 +1364,15 @@ export function startAutoDevelopmentLoop(): void {
       console.error("[auto-dev] periodic phase nudge failed", error);
     });
   };
+  const heartbeat = () => {
+    void operationsHeartbeatAll().catch((error) => {
+      console.error("[auto-dev] operations heartbeat sweep failed", error);
+    });
+  };
   setTimeout(() => {
     mergeReviewed();
     nudgeGates();
+    heartbeat();
     void autoStartAll();
   }, 4_000).unref();
   setInterval(() => {
@@ -1233,4 +1380,5 @@ export function startAutoDevelopmentLoop(): void {
     nudgeGates();
     void autoStartAll();
   }, 20_000).unref();
+  setInterval(heartbeat, 5 * 60_000).unref();
 }
