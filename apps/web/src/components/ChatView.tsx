@@ -150,6 +150,16 @@ export function ChatView() {
     return !lastTurnId || lastTurnId === turn.turnId;
   };
 
+  const displayMessages = () => {
+    const all = messages();
+    // Repeated "no ready work" notices are diagnostic, not conversation. Keep
+    // only the latest one so a stuck queue does not fill the whole room.
+    const lastGate = [...all].reverse().find((message) => message.metadata?.["kind"] === "gate_waiting");
+    return all.filter(
+      (message) => message.metadata?.["kind"] !== "gate_waiting" || message.id === lastGate?.id,
+    );
+  };
+
   const suggestions = (): Array<{ label: string; run: () => void }> => {
     const snap = snapshot();
     if (!snap) return [];
@@ -293,7 +303,7 @@ export function ChatView() {
             </div>
           </Show>
 
-          <For each={messages()}>
+          <For each={displayMessages()}>
             {(message) => {
               if (message.senderType === "system") {
                 return <div class="system-line">{message.content}</div>;
