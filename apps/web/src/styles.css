@@ -628,6 +628,16 @@ button {
   text-align: center;
   padding: 2px 0;
 }
+.system-line.client-confirmation {
+  color: #f5b544;
+  background: #f5b54410;
+  border: 1px solid #f5b54445;
+  border-radius: 8px;
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 12px;
+  margin: 4px 0;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;

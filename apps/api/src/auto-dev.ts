@@ -1079,7 +1079,8 @@ export async function autoStartNext(projectId: string): Promise<void> {
     let [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!project) return;
     if (project.status === "archived") return;
-    if (project.phase !== "coding" || !project.repoPath) return;
+    if (!["coding", "testing", "deployment", "operations"].includes(project.phase)) return;
+    if (!project.repoPath) return;
     const repoPath = project.repoPath;
 
     // A task that just reached review is not a human decision yet. Merge
@@ -1137,6 +1138,9 @@ export async function autoStartNext(projectId: string): Promise<void> {
     let candidate: TaskRow | undefined;
     for (const task of taskRows) {
       if (task.status !== "ready") continue;
+      // Outside coding, only run the read-only tool workbenches (QA walkthrough,
+      // security scan, deployment check). Business code changes belong to coding.
+      if (project.phase !== "coding" && task.mode !== "workbench") continue;
       if (await dependenciesMet(task.id)) {
         candidate = task;
         break;
@@ -1190,7 +1194,10 @@ export function resumeAutoDevelopment(projectId: string): void {
 
 export async function autoStartAll(): Promise<void> {
   const db = getDb();
-  const rows = await db.select().from(projects).where(eq(projects.phase, "coding"));
+  const rows = await db
+    .select()
+    .from(projects)
+    .where(inArray(projects.phase, ["coding", "testing", "deployment", "operations"]));
   await Promise.all(rows.map((project) => autoStartNext(project.id)));
 }
 

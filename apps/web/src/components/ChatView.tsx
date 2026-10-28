@@ -37,6 +37,25 @@ function turnOf(message: Message): TurnSummary | undefined {
   return raw && typeof raw === "object" ? (raw as TurnSummary) : undefined;
 }
 
+function isPhaseTransition(message: Message): boolean {
+  const actionTypes = message.metadata?.["actionTypes"];
+  return (
+    Array.isArray(actionTypes) &&
+    (actionTypes.includes("request_phase") || actionTypes.includes("set_phase"))
+  );
+}
+
+function messageBadge(message: Message): string | null {
+  if (message.type === "discussion") return null;
+  if (isPhaseTransition(message)) return "内部阶段推进";
+  if (message.type === "question") return "问题";
+  if (message.type === "task_handoff") return "任务交接";
+  if (message.type === "decision") return "决策";
+  if (message.type === "artifact") return "产物";
+  if (message.type === "blocker") return "阻塞";
+  return message.type;
+}
+
 function TurnSummaryLine(props: { turn: TurnSummary; waiting?: boolean }) {
   const passedTitle = () =>
     props.turn.passed.map((p) => `${p.name}：${p.reason}`).join("\n") || "无";
@@ -306,7 +325,12 @@ export function ChatView() {
           <For each={displayMessages()}>
             {(message) => {
               if (message.senderType === "system") {
-                return <div class="system-line">{message.content}</div>;
+                const clientConfirmation = message.metadata?.["kind"] === "client_confirmation";
+                return (
+                  <div class={`system-line ${clientConfirmation ? "client-confirmation" : ""}`}>
+                    {message.content}
+                  </div>
+                );
               }
               const role = roleOf(message);
               const isUser = message.senderType === "user";
@@ -328,14 +352,8 @@ export function ChatView() {
                       <Show when={isUser}>
                         <span class="msg-role client">甲方 · 客户</span>
                       </Show>
-                      <Show when={message.type !== "discussion"}>
-                        <span class="badge">
-                          {message.type === "question"
-                            ? "待甲方回答"
-                            : message.type === "task_handoff"
-                              ? "任务交接"
-                              : message.type}
-                        </span>
+                      <Show when={messageBadge(message)}>
+                        <span class="badge">{messageBadge(message)}</span>
                       </Show>
                       <span class="msg-time">{timeOf(message.createdAt)}</span>
                     </div>

@@ -47,7 +47,7 @@ function messageTypeFor(actions: ValidatedAgentAction[]): MessageType {
   if (actions.some((a) => a.type === "create_artifact")) return "artifact";
   if (actions.some((a) => a.type === "create_task")) return "task_handoff";
   if (actions.some((a) => a.type === "propose_decision")) return "decision";
-  if (actions.some((a) => a.type === "request_phase" || a.type === "set_phase")) return "question";
+  if (actions.some((a) => a.type === "request_phase" || a.type === "set_phase")) return "decision";
   if (actions.some((a) => a.type === "block")) return "blocker";
   if (actions.some((a) => a.type === "ask_user")) return "question";
   return "discussion";
@@ -734,6 +734,9 @@ export class Orchestrator {
                 !/[?？]/.test(result.text)
               ? `${result.text}\n\n${askAction.question}`
               : result.text;
+          const clientQuestion = Boolean(askAction?.question && !engineeringAsk);
+          const finalContent =
+            clientQuestion && !content.includes("@甲方") ? `@甲方 ${content}` : content;
           const messageId = uuidv7();
           await insertMessage({
             id: messageId,
@@ -744,7 +747,7 @@ export class Orchestrator {
             senderId: item.role.id,
             senderName: item.role.displayName,
             type: messageTypeFor(actions),
-            content,
+            content: finalContent,
             metadata: {
               roleKey: item.role.key,
               turnId,
