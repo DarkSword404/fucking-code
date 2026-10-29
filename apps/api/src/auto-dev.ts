@@ -1271,29 +1271,8 @@ async function operationsHeartbeat(project: ProjectRow): Promise<void> {
   const healthy = healthStatus === 200 && (!previewUrl || previewStatus === 200);
   const messageId = uuidv7();
   if (healthy) {
-    await insertMessage({
-      id: messageId,
-      tenantId: project.tenantId,
-      projectId: project.id,
-      roomId: room.id,
-      senderType: "system",
-      senderName: "系统",
-      type: "system_event",
-      content: [
-        "运维巡检正常。",
-        `- /health：${healthStatus}`,
-        previewUrl ? `- 预览：${previewStatus}（${previewUrl}）` : "- 预览：未运行",
-        "- 当前没有待处理异常。",
-      ].join("\n"),
-      metadata: { kind: "ops_heartbeat", healthStatus, previewStatus, previewUrl },
-    });
-    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
-      messageId,
-      roomId: room.id,
-      senderType: "system",
-      senderName: "系统",
-      type: "system_event",
-    });
+    // Healthy heartbeats are intentionally silent. Only incidents belong in
+    // the room; periodic "all good" notices bury the actual conversation.
     return;
   }
 

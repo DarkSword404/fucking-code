@@ -91,6 +91,8 @@ export interface RoomBundle {
   memories: Array<typeof memories.$inferSelect>;
 }
 
+const visibleMessage = sql`coalesce(${messages.metadata}->>'kind', '') NOT IN ('gate_waiting', 'ops_heartbeat')`;
+
 export async function loadRoomBundle(
   projectId: string,
   roomId: string,
@@ -107,7 +109,7 @@ export async function loadRoomBundle(
     db
       .select()
       .from(messages)
-      .where(eq(messages.roomId, roomId))
+      .where(and(eq(messages.roomId, roomId), visibleMessage))
       .orderBy(desc(messages.seq))
       .limit(messageLimit),
     db.select().from(tasks).where(eq(tasks.projectId, projectId)).orderBy(desc(tasks.updatedAt)),
@@ -158,12 +160,12 @@ export async function latestArtifactContent(artifactId: string) {
 
 export async function messagePage(roomId: string, cursor: number | null, limit = 40) {
   const db = getDb();
-  // Idle notices are diagnostic events, not conversation. Keeping them in the
-  // page window would push real discussion out and leave the chat looking empty.
-  const visible = sql`coalesce(${messages.metadata}->>'kind', '') <> 'gate_waiting'`;
+  // Idle notices and healthy heartbeats are diagnostic events, not
+  // conversation. Keeping them in the page window would push real discussion
+  // out and leave the chat looking empty.
   const scope = cursor
-    ? and(eq(messages.roomId, roomId), sql`${messages.seq} < ${cursor}`, visible)
-    : and(eq(messages.roomId, roomId), visible);
+    ? and(eq(messages.roomId, roomId), sql`${messages.seq} < ${cursor}`, visibleMessage)
+    : and(eq(messages.roomId, roomId), visibleMessage);
   const rows = await db
     .select()
     .from(messages)

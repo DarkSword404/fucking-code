@@ -213,7 +213,9 @@ export function ChatView() {
     // only the latest one so a stuck queue does not fill the whole room.
     const lastGate = [...all].reverse().find((message) => message.metadata?.["kind"] === "gate_waiting");
     return all.filter(
-      (message) => message.metadata?.["kind"] !== "gate_waiting" || message.id === lastGate?.id,
+      (message) =>
+        message.metadata?.["kind"] !== "ops_heartbeat" &&
+        (message.metadata?.["kind"] !== "gate_waiting" || message.id === lastGate?.id),
     );
   };
 
