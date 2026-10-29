@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/yauzl": "^3.4.0",
     "concurrently": "^9.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

@@ -232,6 +232,8 @@ export const attachments = pgTable(
     mime: text("mime").notNull(),
     size: integer("size").notNull(),
     path: text("path").notNull(),
+    extractedPath: text("extracted_path"),
+    entryCount: integer("entry_count"),
     createdBy: uuid("created_by"),
     createdAt,
   },

@@ -124,6 +124,8 @@ npm run dev
 - 单条消息最多 8 个附件，单张/单个最大 20 MB；
 - 图片显示缩略图，PDF/文档/代码等显示文件卡片，可点击下载；
 - 文件存在 `ATTACHMENTS_ROOT`（默认 `data/attachments`）；
+- 上传 zip / tar / tar.gz / tgz 会自动安全解压，解压后的文件也会一起交给模型；
+- 解压限制：最多 300 个文件、单文件 20 MB、解压总量 60 MB；
 - 删除项目时会删除该项目附件目录。
 
 模型侧：
@@ -133,7 +135,7 @@ MULTIMODAL_MODEL_PROVIDER=opencode-go
 MULTIMODAL_MODEL_ID=gemini-4-argon
 ```
 
-准确地说，**OpenCode 本身支持在 session 里上传图片和文件**；限制只在于我们用于纯文本的无状态接口 `/api/experimental/generate` 只接收 `prompt` 和 `model`，没有 `files` 字段。因此带附件的回合改走 `/api/session/{id}/prompt` 的 `files`，创建一个**工具全部禁用的一次性 session**，拿到结果后立即删除；纯文本聊天仍然不创建 session。OpenCode 使用本地 `file://` URI 传递附件（`MULTIMODAL_FILE_URI=1`，默认），避免大文件 base64 膨胀。OpenAI-compatible 网关对图片发送 `image_url`，对文本类文件把内容拼进 prompt。压缩包、二进制可执行文件等需要先解压/提取，模型不会自动执行文件内容。
+准确地说，**OpenCode 本身支持在 session 里上传图片和文件**；限制只在于我们用于纯文本的无状态接口 `/api/experimental/generate` 只接收 `prompt` 和 `model`，没有 `files` 字段。因此带附件的回合改走 `/api/session/{id}/prompt` 的 `files`，创建一个**工具全部禁用的一次性 session**，拿到结果后立即删除；纯文本聊天仍然不创建 session。OpenCode 使用本地 `file://` URI 传递附件（`MULTIMODAL_FILE_URI=1`，默认），避免大文件 base64 膨胀。OpenAI-compatible 网关对图片发送 `image_url`，对文本类文件把内容拼进 prompt。压缩包会先解压，再把解压后的文件和原始压缩包一起交给 OpenCode `files`；二进制可执行文件不会被执行。
 
 ### Agent 工具与 workbench
 

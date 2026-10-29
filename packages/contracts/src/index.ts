@@ -208,6 +208,8 @@ export interface MessageAttachment {
   mime: string;
   size: number;
   url: string;
+  archive?: boolean;
+  entries?: number;
 }
 
 export interface Message {

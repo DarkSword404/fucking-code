@@ -113,6 +113,12 @@ import { buildProjectPackage } from "./export.js";
 import { handleGitHttp } from "./git-host.js";
 import { syncProjectRepo } from "./repo-sync.js";
 import {
+  extractArchive,
+  isArchive,
+  listExtractedFiles,
+  mimeForFile,
+} from "./archive.js";
+import {
   cancelOpenCodeAuth,
   getOpenCodeAuthState,
   refreshOpenCodeAuthState,
@@ -1476,6 +1482,31 @@ app.post("/api/v1/projects/:projectId/attachments", async (c) => {
   }
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, buffer);
+
+  let extractedPath: string | null = null;
+  let entryCount: number | null = null;
+  if (isArchive(body.name, mime)) {
+    const relativeDir = join(project.id, id);
+    const destination = resolve(root, relativeDir);
+    if (!destination.startsWith(`${root}/`)) {
+      await rm(target, { force: true }).catch(() => undefined);
+      throw new HttpError(400, "ATTACHMENT_INVALID", "附件解压路径无效。");
+    }
+    try {
+      const extracted = await extractArchive(target, body.name, destination);
+      extractedPath = relativeDir;
+      entryCount = extracted.entries;
+    } catch (error) {
+      await rm(target, { force: true }).catch(() => undefined);
+      await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+      throw new HttpError(
+        400,
+        "ARCHIVE_INVALID",
+        `压缩包解压失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   try {
     await getDb().insert(attachments).values({
       id,
@@ -1484,10 +1515,17 @@ app.post("/api/v1/projects/:projectId/attachments", async (c) => {
       mime,
       size: buffer.length,
       path: relativePath,
+      extractedPath,
+      entryCount,
       createdBy: c.get("user").id,
     });
   } catch (error) {
     await rm(target, { force: true }).catch(() => undefined);
+    if (extractedPath) {
+      await rm(resolve(root, extractedPath), { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
     throw error;
   }
   return c.json(
@@ -1497,6 +1535,8 @@ app.post("/api/v1/projects/:projectId/attachments", async (c) => {
       mime,
       size: buffer.length,
       url: attachmentUrl(project.id, id),
+      archive: Boolean(extractedPath),
+      entries: entryCount ?? 0,
     },
     201,
   );
@@ -1618,12 +1658,33 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
       attachmentRows.push(row);
     }
   }
-  const files = attachmentRows.map((row) => ({
-    name: row.name,
-    mime: row.mime,
-    size: row.size,
-    path: resolve(attachmentsRoot(), row.path),
-  }));
+  const files: Array<{ name: string; mime: string; size?: number; path: string }> = [];
+  for (const row of attachmentRows) {
+    files.push({
+      name: row.name,
+      mime: row.mime,
+      size: row.size,
+      path: resolve(attachmentsRoot(), row.path),
+    });
+    if (row.extractedPath) {
+      try {
+        const extracted = await listExtractedFiles(
+          resolve(attachmentsRoot(), row.extractedPath),
+          40,
+        );
+        for (const entry of extracted) {
+          if (files.length >= 80) break;
+          files.push({
+            name: `${row.name}/${entry.name}`,
+            mime: mimeForFile(entry.name),
+            path: entry.path,
+          });
+        }
+      } catch {
+        // The archive file is still attached; missing extraction is not fatal.
+      }
+    }
+  }
 
   // A client can answer an @-mention in the room with "接受/不接受" or
   // "批准/拒绝" instead of opening the decision inbox. Only resolve when the
@@ -1726,6 +1787,8 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
         mime: row.mime,
         size: row.size,
         url: attachmentUrl(project.id, row.id),
+        archive: Boolean(row.extractedPath),
+        entries: row.entryCount ?? 0,
       })),
     },
   });

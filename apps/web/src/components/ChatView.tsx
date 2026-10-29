@@ -469,7 +469,12 @@ export function ChatView() {
                                   <span class="msg-file">
                                     <span class="msg-file-icon">▤</span>
                                     <span>{attachment.name}</span>
-                                    <small>{Math.max(1, Math.round(attachment.size / 1024))} KB</small>
+                                    <small>
+                                      {Math.max(1, Math.round(attachment.size / 1024))} KB
+                                      {attachment.archive
+                                        ? ` · 已解压 ${attachment.entries ?? 0} 个文件`
+                                        : ""}
+                                    </small>
                                   </span>
                                 }
                               >
