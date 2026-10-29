@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Orchestrator, opencodeFetch } from "@devteam/agents";
 import { syncProjectRepo } from "./repo-sync.js";
 import {
@@ -321,6 +321,40 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
   } finally {
     phaseNudgeLocks.delete(projectId);
   }
+}
+
+/**
+ * A client-facing question/decision in the room pauses automatic task starts.
+ * The orchestrator already stops adding rounds; this guard also prevents the
+ * scheduler from starting a task created earlier in the same turn.
+ */
+async function hasUnansweredClientQuestion(projectId: string): Promise<boolean> {
+  const db = getDb();
+  const [question] = await db
+    .select({ seq: messages.seq })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.projectId, projectId),
+        eq(messages.type, "question"),
+        sql`coalesce(${messages.metadata}->>'clientQuestion', '') = 'true'`,
+      ),
+    )
+    .orderBy(desc(messages.seq))
+    .limit(1);
+  if (!question) return false;
+  const [reply] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.projectId, projectId),
+        eq(messages.senderType, "user"),
+        gt(messages.seq, question.seq),
+      ),
+    )
+    .limit(1);
+  return !reply;
 }
 
 export async function pauseAutoDevelopment(
@@ -1083,6 +1117,7 @@ export async function autoStartNext(projectId: string): Promise<void> {
     if (project.status === "archived") return;
     if (!["coding", "testing", "deployment", "operations"].includes(project.phase)) return;
     if (!project.repoPath) return;
+    if (await hasUnansweredClientQuestion(projectId)) return;
     const repoPath = project.repoPath;
 
     // A task that just reached review is not a human decision yet. Merge
