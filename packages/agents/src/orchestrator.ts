@@ -907,6 +907,7 @@ export class Orchestrator {
       // focused extraction turn instead of asking the human to create tasks.
       if (
         !params.signal?.aborted &&
+        !waitingForUser &&
         bundle.project.phase === "design" &&
         bundle.artifacts.some((artifact) => artifact.kind === "plan") &&
         bundle.tasks.length <= tasksBefore
