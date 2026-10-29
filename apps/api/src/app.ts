@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { getCookie } from "hono/cookie";
@@ -668,11 +670,21 @@ app.post("/api/v1/admin/users/:userId/password", async (c) => {
   return c.json({ ok: true });
 });
 
+function managedRepoPath(projectId: string, repoPath: string | null): string | null {
+  if (!repoPath) return null;
+  const root = resolve(
+    process.env.PROJECT_REPO_ROOT ?? process.env.DEMO_REPO_ROOT ?? "./data/repos",
+  );
+  const expected = join(root, `project-${projectId}`);
+  return resolve(repoPath) === expected ? expected : null;
+}
+
 async function cleanupProjectWorkspaces(
   projectRows: Array<{ id: string; repoPath: string | null }>,
 ): Promise<void> {
   if (!projectRows.length) return;
   const db = getDb();
+  for (const project of projectRows) stopPreview(project.id);
   const repoByProject = new Map(projectRows.map((project) => [project.id, project.repoPath]));
   const rows = await db
     .select()
@@ -692,6 +704,22 @@ async function cleanupProjectWorkspaces(
       await removeProjectWorkspaceDirectory(project.id);
     } catch (error) {
       console.error("[admin] failed to remove project workspace directory", project.id, error);
+    }
+    const managedRepo = managedRepoPath(project.id, project.repoPath);
+    if (managedRepo) {
+      try {
+        await rm(managedRepo, { recursive: true, force: true });
+      } catch (error) {
+        console.error("[admin] failed to remove managed project repo", managedRepo, error);
+      }
+    }
+    if (/^[0-9a-f-]{20,40}$/i.test(project.id)) {
+      try {
+        const gitRoot = resolve(process.env.PROJECT_GIT_ROOT ?? "./data/git");
+        await rm(join(gitRoot, `${project.id}.git`), { recursive: true, force: true });
+      } catch (error) {
+        console.error("[admin] failed to remove hosted git mirror", project.id, error);
+      }
     }
   }
 }
