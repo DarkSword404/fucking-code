@@ -213,6 +213,7 @@ ExecStart=$(command -v node) --import tsx $APP_DIR/apps/api/src/index.ts
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM
+TimeoutStopSec=20
 
 [Install]
 WantedBy=multi-user.target
