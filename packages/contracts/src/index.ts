@@ -202,6 +202,14 @@ export interface Room {
   createdAt: string;
 }
 
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  url: string;
+}
+
 export interface Message {
   id: string;
   tenantId: string;

@@ -132,6 +132,7 @@ async function main(): Promise<void> {
         const wanted = [
           `${env("AGENT_MODEL_PROVIDER", "opencode-go")}/${env("AGENT_MODEL_ID", "deepseek-v4.1-flash")}`,
           `${env("ATTENTION_MODEL_PROVIDER", "opencode-go")}/${env("ATTENTION_MODEL_ID", "mimo-v2.6-flash")}`,
+          `${env("MULTIMODAL_MODEL_PROVIDER", "opencode-go")}/${env("MULTIMODAL_MODEL_ID", "gemini-4-argon")}`,
         ];
         const available = new Set(models.split(/\s+/).filter(Boolean));
         for (const model of wanted) {
@@ -159,8 +160,16 @@ async function main(): Promise<void> {
     else add("warn", "注册邀请码", "SIGNUP_INVITE_CODE 为空；只能使用已有账号登录");
   }
 
-  for (const key of ["PGDATA", "WORKSPACE_ROOT", "PROJECT_REPO_ROOT", "PROJECT_GIT_ROOT"]) {
-    const dir = resolve(env(key, "./data"));
+  for (const key of [
+    "PGDATA",
+    "WORKSPACE_ROOT",
+    "PROJECT_REPO_ROOT",
+    "PROJECT_GIT_ROOT",
+    "ATTACHMENTS_ROOT",
+  ]) {
+    const dir = resolve(
+      env(key, key === "ATTACHMENTS_ROOT" ? "./data/attachments" : "./data"),
+    );
     try {
       mkdirSync(dir, { recursive: true });
       accessSync(dir, constants.W_OK);

@@ -448,9 +448,13 @@ export async function loadProject(id: string): Promise<void> {
   }
 }
 
-export async function sendMessage(content: string, mentions?: string[]): Promise<void> {
+export async function sendMessage(
+  content: string,
+  mentions?: string[],
+  attachmentIds?: string[],
+): Promise<void> {
   const id = currentId();
-  if (!id || !content.trim()) return;
+  if (!id || (!content.trim() && !attachmentIds?.length)) return;
   setSending(true);
   try {
     const message = await api.postMessage(
@@ -458,6 +462,7 @@ export async function sendMessage(content: string, mentions?: string[]): Promise
       content.trim(),
       mentions,
       turnParticipants() ?? undefined,
+      attachmentIds,
     );
     setMessages((prev) => mergeMessages(prev, [message]));
     setTurnParticipants(null);

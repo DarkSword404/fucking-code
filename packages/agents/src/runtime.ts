@@ -1,6 +1,6 @@
 import type { AgentTurnResult, WorkflowPhase } from "@devteam/contracts";
 import { parseAgentOutput } from "@devteam/domain";
-import { createModelGateway, type ModelGateway } from "./gateway.js";
+import { createModelGateway, type ModelGateway, type ModelImage } from "./gateway.js";
 import { heuristicAttention, parseAttentionDecision } from "./attention.js";
 
 export interface GenerateRequest {
@@ -10,6 +10,7 @@ export interface GenerateRequest {
   prompt: string;
   userMessage: string;
   phase: string;
+  images?: ModelImage[];
   signal?: AbortSignal;
   model?: { providerID: string; id: string } | null;
 }
@@ -60,13 +61,24 @@ export class OpenCodeRuntime implements AgentRuntime {
 
   async generate(request: GenerateRequest): Promise<AgentTurnResult> {
     const started = Date.now();
-    const model = request.model ?? { providerID: this.provider, id: this.modelId };
+    const baseModel = request.model ?? { providerID: this.provider, id: this.modelId };
+    const model = request.images?.length
+      ? {
+          providerID:
+            process.env.MULTIMODAL_MODEL_PROVIDER ??
+            (this.gateway.name === "opencode" ? "opencode-go" : baseModel.providerID),
+          id:
+            process.env.MULTIMODAL_MODEL_ID ??
+            (this.gateway.name === "opencode" ? "gemini-4-argon" : baseModel.id),
+        }
+      : baseModel;
     const timeoutMs = request.roleKey === "architect" ? 180_000 : 90_000;
 
     const text = await this.gateway.generateText({
       system: request.system,
       prompt: request.prompt,
       model,
+      images: request.images,
       signal: request.signal,
       timeoutMs,
     });

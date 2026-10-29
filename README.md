@@ -116,6 +116,24 @@ npm run dev
 2. 创建本地用户、示例项目 **Acme Notes**、主聊天室和默认团队；
 3. 在 `data/repos/acme-notes` 创建一个带失败测试的小型 Git 仓库，作为代码任务的目标。
 
+### 多模态聊天
+
+聊天输入框支持图片：
+
+- 点「图片」选择，或直接把截图粘贴到输入框；
+- 单条消息最多 4 张，单张 8 MB；
+- 图片存在 `ATTACHMENTS_ROOT`（默认 `data/attachments`），消息里显示缩略图；
+- 删除项目时会删除该项目附件目录。
+
+模型侧：
+
+```env
+MULTIMODAL_MODEL_PROVIDER=opencode-go
+MULTIMODAL_MODEL_ID=gemini-4-argon
+```
+
+OpenCode 网关的 stateless 接口不支持图片，因此图片回合会创建一个**工具全部禁用的一次性 session**，拿到描述后立即删除；纯文本聊天仍然不创建 session。OpenAI-compatible 网关则直接发送 `image_url` content parts。
+
 ### Agent 工具与 workbench
 
 聊天室里的成员默认是纯文本回合：他们没有 shell、浏览器，也不会直接改代码。需要真实执行时，让对应角色创建 **`mode=workbench`** 的任务：

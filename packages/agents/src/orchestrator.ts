@@ -15,6 +15,7 @@ import {
 } from "./attention.js";
 import { buildPrompt, buildSystemPrompt, extractMentions, normalizeMention } from "./context.js";
 import type { AgentRuntime } from "./runtime.js";
+import type { ModelImage } from "./gateway.js";
 
 export interface OrchestratorParams {
   projectId: string;
@@ -24,6 +25,7 @@ export interface OrchestratorParams {
   mentions?: string[];
   participantKeys?: string[];
   repoContext?: string;
+  images?: ModelImage[];
   userId: string;
   userName: string;
   triggerLabel?: string;
@@ -440,9 +442,14 @@ export class Orchestrator {
     const postedSummary = new Map<string, { role: string; name: string; reason: string }>();
     const passedSummary = new Map<string, { role: string; name: string; reason: string }>();
     const forcedNext = new Map<string, string>();
+    const imageNote = params.images?.length
+      ? `\n\n[用户上传了 ${params.images.length} 张图片：${params.images
+          .map((image) => image.name)
+          .join("、")}]`
+      : "";
     let trigger: RoomTrigger = {
       senderName: params.triggerLabel ?? `甲方（${params.userName}）`,
-      content: params.content,
+      content: `${params.content}${imageNote}`,
     };
     let totalMessages = 0;
     let round = 0;
@@ -654,6 +661,7 @@ export class Orchestrator {
               ),
               userMessage: trigger.content,
               phase: bundle.project.phase,
+              images: params.images,
               signal: params.signal,
               model:
                 role.modelProvider && role.modelId

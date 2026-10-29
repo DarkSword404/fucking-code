@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { opencodeFetch } from "./opencode-client.js";
 
 export interface ModelRef {
@@ -5,10 +6,18 @@ export interface ModelRef {
   id: string;
 }
 
+export interface ModelImage {
+  name: string;
+  mime: string;
+  /** Base64 payload without the data: prefix. */
+  data: string;
+}
+
 export interface ModelTextRequest {
   system: string;
   prompt: string;
   model: ModelRef;
+  images?: ModelImage[];
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -28,6 +37,7 @@ export class OpenCodeGateway implements ModelGateway {
   readonly name = "opencode";
 
   async generateText(request: ModelTextRequest): Promise<string> {
+    if (request.images?.length) return this.generateWithImages(request);
     const response = await opencodeFetch<{ data?: { text?: string }; message?: string }>(
       "/api/experimental/generate",
       {
@@ -48,6 +58,99 @@ export class OpenCodeGateway implements ModelGateway {
     const text = (response.data as { data?: { text?: string } } | null)?.data?.text ?? "";
     if (!text.trim()) throw new Error("OpenCode gateway returned empty text");
     return text;
+  }
+
+  /**
+   * OpenCode's stateless generate endpoint does not accept images. For image
+   * turns we use a short-lived, tool-denied session, then delete it. Text-only
+   * chat stays stateless.
+   */
+  private async generateWithImages(request: ModelTextRequest): Promise<string> {
+    const images = request.images ?? [];
+    const timeoutMs = request.timeoutMs ?? 120_000;
+    const created = await opencodeFetch<{ data?: { id?: string } }>("/api/session", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "[Fucking Code] image turn",
+        location: { directory: process.env.MULTIMODAL_WORKDIR ?? tmpdir() },
+        model: request.model,
+        permissions: [{ action: "*", resource: "*", effect: "deny" }],
+      }),
+      signal: request.signal,
+      timeoutMs: 30_000,
+    });
+    const sessionId = (created.data as { data?: { id?: string } } | null)?.data?.id;
+    if (!created.ok || !sessionId) {
+      throw new Error(
+        `OpenCode vision session failed (${created.status}): ${created.raw.slice(0, 400)}`,
+      );
+    }
+
+    try {
+      const prompted = await opencodeFetch(`/api/session/${sessionId}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({
+          text: `${request.system}\n\n---\n\n${request.prompt}`,
+          files: images.map((image) => ({
+            uri: `data:${image.mime};base64,${image.data}`,
+            name: image.name,
+          })),
+        }),
+        signal: request.signal,
+        timeoutMs: 30_000,
+      });
+      if (!prompted.ok) {
+        throw new Error(
+          `OpenCode vision prompt failed (${prompted.status}): ${prompted.raw.slice(0, 400)}`,
+        );
+      }
+
+      const deadline = Date.now() + timeoutMs;
+      let outcome = "";
+      while (Date.now() < deadline) {
+        if (request.signal?.aborted) throw new Error("vision generation cancelled");
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const status = await opencodeFetch<{ data?: Record<string, unknown> }>(
+          `/api/session/${sessionId}`,
+          { signal: request.signal, timeoutMs: 15_000 },
+        );
+        const data = (status.data as { data?: Record<string, unknown> } | null)?.data;
+        outcome = String(data?.outcome ?? "");
+        if (outcome) break;
+      }
+      if (!outcome) throw new Error("OpenCode vision generation timed out");
+
+      const messages = await opencodeFetch<{ data?: Array<Record<string, unknown>> }>(
+        `/api/session/${sessionId}/message?order=asc&limit=200`,
+        { signal: request.signal, timeoutMs: 20_000 },
+      );
+      const rows = (messages.data as { data?: Array<Record<string, unknown>> } | null)?.data ?? [];
+      const assistantRows = rows.filter((row) => row.type === "assistant");
+      const text = assistantRows
+        .map((row) =>
+          Array.isArray(row.content)
+            ? (row.content as Array<Record<string, unknown>>)
+                .filter((part) => part.type === "text")
+                .map((part) => String(part.text ?? ""))
+                .join("")
+            : "",
+        )
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      if (!text) {
+        const error = assistantRows
+          .map((row) => row.error as { message?: string } | undefined)
+          .find((item) => item?.message)?.message;
+        throw new Error(`OpenCode vision generation ${outcome}${error ? `: ${error}` : ""}`);
+      }
+      return text;
+    } finally {
+      await opencodeFetch(`/api/session/${sessionId}`, {
+        method: "DELETE",
+        timeoutMs: 15_000,
+      }).catch(() => undefined);
+    }
   }
 }
 
@@ -71,7 +174,18 @@ export class OpenAICompatibleGateway implements ModelGateway {
         temperature: 0.2,
         messages: [
           { role: "system", content: request.system },
-          { role: "user", content: request.prompt },
+          {
+            role: "user",
+            content: request.images?.length
+              ? [
+                  { type: "text", text: request.prompt },
+                  ...request.images.map((image) => ({
+                    type: "image_url",
+                    image_url: { url: `data:${image.mime};base64,${image.data}` },
+                  })),
+                ]
+              : request.prompt,
+          },
         ],
       }),
       signal: request.signal ?? AbortSignal.timeout(request.timeoutMs ?? 90_000),

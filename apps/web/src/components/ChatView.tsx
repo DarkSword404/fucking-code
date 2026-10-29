@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { Message, TurnSummary } from "@devteam/contracts";
+import type { Message, MessageAttachment, TurnSummary } from "@devteam/contracts";
 import {
   activity,
   canEditCurrentProject,
@@ -18,12 +18,43 @@ import {
   toast,
   turnParticipants,
 } from "../lib/store";
+import { api } from "../lib/api";
 import { Avatar } from "./Avatar";
 import { Markdown } from "../lib/markdown";
 
 interface Chip {
   kind: string;
   label: string;
+}
+
+interface PendingImage {
+  name: string;
+  mime: string;
+  size: number;
+  data: string;
+  preview: string;
+}
+
+function attachmentsOf(message: Message): MessageAttachment[] {
+  const raw = message.metadata?.["attachments"];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (item): item is MessageAttachment =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as MessageAttachment).url === "string" &&
+      typeof (item as MessageAttachment).id === "string",
+  );
+}
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 function timeOf(value: string): string {
@@ -88,8 +119,11 @@ export function ChatView() {
   let activeProjectId = "";
   let stickToBottom = true;
   let textarea: HTMLTextAreaElement | undefined;
+  let fileInput: HTMLInputElement | undefined;
   const projectId = () => snapshot()?.project.id ?? "";
   const [value, setValue] = createSignal(savedDrafts.get(projectId()) ?? "");
+  const [pendingImages, setPendingImages] = createSignal<PendingImage[]>([]);
+  const [uploading, setUploading] = createSignal(false);
   const [mentionOpen, setMentionOpen] = createSignal(false);
   const [pickerOpen, setPickerOpen] = createSignal(false);
 
@@ -97,6 +131,8 @@ export function ChatView() {
     if (!previous || previous === id) return;
     savedDrafts.set(previous, value());
     setValue(savedDrafts.get(id) ?? "");
+    for (const image of pendingImages()) URL.revokeObjectURL(image.preview);
+    setPendingImages([]);
   }));
 
   const roles = () => snapshot()?.roles ?? [];
@@ -294,17 +330,71 @@ export function ChatView() {
     textarea?.focus();
   }
 
-  function submit() {
-    const content = value().trim();
-    if (!content || sending()) return;
-    const mentions = [...content.matchAll(/@([A-Za-z\u4e00-\u9fa5]+)/g)].map((m) => m[1]!);
+  async function addImageFiles(files: FileList | File[]): Promise<void> {
+    const incoming = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (!incoming.length) return;
+    const room = 4 - pendingImages().length;
+    if (room <= 0) {
+      toast("一次最多上传 4 张图片。");
+      return;
+    }
+    const selected = incoming.slice(0, room);
+    const next: PendingImage[] = [];
+    for (const file of selected) {
+      if (file.size > 8 * 1024 * 1024) {
+        toast(`${file.name} 超过 8 MB，已跳过。`);
+        continue;
+      }
+      next.push({
+        name: file.name || "image",
+        mime: file.type === "image/jpg" ? "image/jpeg" : file.type,
+        size: file.size,
+        data: bytesToBase64(await file.arrayBuffer()),
+        preview: URL.createObjectURL(file),
+      });
+    }
+    if (incoming.length > selected.length) toast("一次最多上传 4 张图片。");
+    if (next.length) setPendingImages([...pendingImages(), ...next]);
+  }
+
+  function removeImage(index: number): void {
+    const image = pendingImages()[index];
+    if (image) URL.revokeObjectURL(image.preview);
+    setPendingImages(pendingImages().filter((_, i) => i !== index));
+  }
+
+  async function submit() {
+    const text = value().trim();
+    const images = pendingImages();
+    if ((!text && !images.length) || sending() || uploading()) return;
+    setUploading(true);
+    const ids: string[] = [];
+    try {
+      for (const image of images) {
+        const uploaded = await api.uploadAttachment(projectId(), {
+          name: image.name,
+          mime: image.mime,
+          data: image.data,
+        });
+        ids.push(uploaded.id);
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "图片上传失败");
+      setUploading(false);
+      return;
+    }
+    setUploading(false);
+    const mentions = [...text.matchAll(/@([A-Za-z\u4e00-\u9fa5]+)/g)].map((m) => m[1]!);
     setValue("");
     savedDrafts.delete(projectId());
     if (textarea) textarea.style.height = "42px";
     setMentionOpen(false);
     setPickerOpen(false);
-    void sendMessage(content, mentions);
+    for (const image of images) URL.revokeObjectURL(image.preview);
+    setPendingImages([]);
+    void sendMessage(text || "请查看附件", mentions, ids);
   }
+
 
   function onChip(chip: Chip) {
     if (chip.kind === "task") switchView("tasks");
@@ -358,6 +448,23 @@ export function ChatView() {
                       <span class="msg-time">{timeOf(message.createdAt)}</span>
                     </div>
                     <Markdown content={message.content} />
+                    <Show when={attachmentsOf(message).length}>
+                      <div class="msg-attachments">
+                        <For each={attachmentsOf(message)}>
+                          {(attachment) => (
+                            <a
+                              class="msg-attachment"
+                              href={attachment.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={`${attachment.name} · ${Math.round(attachment.size / 1024)} KB`}
+                            >
+                              <img src={attachment.url} alt={attachment.name} />
+                            </a>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
                     <Show when={chips.length}>
                       <div class="chips">
                         <For each={chips}>
@@ -483,6 +590,36 @@ export function ChatView() {
               </For>
             </div>
           </Show>
+          <Show when={pendingImages().length}>
+            <div class="composer-attachments">
+              <For each={pendingImages()}>
+                {(image, index) => (
+                  <div class="composer-attachment">
+                    <img src={image.preview} alt={image.name} />
+                    <button
+                      type="button"
+                      title="移除图片"
+                      onClick={() => removeImage(index())}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            style={{ display: "none" }}
+            onChange={(event) => {
+              const files = event.currentTarget.files;
+              if (files) void addImageFiles(files);
+              event.currentTarget.value = "";
+            }}
+          />
           <textarea
             ref={textarea}
             rows={1}
@@ -497,15 +634,33 @@ export function ChatView() {
               if (mentioning) setPickerOpen(false);
               resize();
             }}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+                file.type.startsWith("image/"),
+              );
+              if (files.length) {
+                event.preventDefault();
+                void addImageFiles(files);
+              }
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                submit();
+                void submit();
               }
               if (event.key === "Escape") setMentionOpen(false);
             }}
           />
           <div class="composer-row">
+            <button
+              class="btn"
+              style={{ padding: "3px 9px", "font-size": "11px" }}
+              disabled={sending() || uploading()}
+              title="上传图片（也可以直接粘贴截图）"
+              onClick={() => fileInput?.click()}
+            >
+              图片
+            </button>
             <button
               class={`btn ${turnParticipants() !== null ? "primary" : ""}`}
               style={{ padding: "3px 9px", "font-size": "11px" }}
@@ -522,10 +677,10 @@ export function ChatView() {
             </Show>
             <button
               class="btn primary"
-              disabled={sending() || !value().trim()}
-              onClick={submit}
+              disabled={sending() || uploading() || (!value().trim() && !pendingImages().length)}
+              onClick={() => void submit()}
             >
-              {sending() ? "发送中…" : "发送"}
+              {uploading() ? "上传中…" : sending() ? "发送中…" : "发送"}
             </button>
           </div>
         </div>

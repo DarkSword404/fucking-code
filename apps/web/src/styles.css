@@ -2623,3 +2623,55 @@ details[open] > .file-dir::before {
   font-size: 10.5px;
   line-height: 1.4;
 }
+
+/* chat image attachments */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.msg-attachment {
+  display: block;
+  line-height: 0;
+  border: 1px solid #2a333d;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0f151b;
+}
+.msg-attachment img {
+  display: block;
+  max-width: min(380px, 100%);
+  max-height: 280px;
+  object-fit: contain;
+}
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+.composer-attachment {
+  position: relative;
+}
+.composer-attachment img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #2a333d;
+}
+.composer-attachment button {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid #3a4652;
+  background: #111820;
+  color: #cbd5e1;
+  cursor: pointer;
+  line-height: 16px;
+  padding: 0;
+}

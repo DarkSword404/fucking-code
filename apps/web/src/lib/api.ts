@@ -7,6 +7,7 @@ import type {
   Decision,
   Memory,
   Message,
+  MessageAttachment,
   Project,
   ProjectMember,
   ProjectSnapshot,
@@ -247,10 +248,24 @@ export const api = {
     request<{ items: Message[]; nextCursor: string | null }>(
       `/projects/${id}/messages${cursor ? `?cursor=${cursor}` : ""}`,
     ),
-  postMessage: (id: string, content: string, mentions?: string[], participants?: string[]) =>
+  postMessage: (
+    id: string,
+    content: string,
+    mentions?: string[],
+    participants?: string[],
+    attachments?: string[],
+  ) =>
     request<Message>(`/projects/${id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, mentions, participants }),
+      body: JSON.stringify({ content, mentions, participants, attachments }),
+    }),
+  uploadAttachment: (
+    id: string,
+    input: { name: string; mime: string; data: string },
+  ) =>
+    request<MessageAttachment>(`/projects/${id}/attachments`, {
+      method: "POST",
+      body: JSON.stringify(input),
     }),
   updateRole: (projectId: string, roleKey: string, patch: { inRoom?: boolean; enabled?: boolean }) =>
     request<AgentRole>(`/projects/${projectId}/roles/${roleKey}`, {

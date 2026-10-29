@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { getCookie } from "hono/cookie";
@@ -43,6 +43,7 @@ import {
   approvals,
   artifacts,
   artifactVersions,
+  attachments,
   auditEvents,
   captureAcceptedSpec,
   decisions,
@@ -704,6 +705,11 @@ async function cleanupProjectWorkspaces(
       await removeProjectWorkspaceDirectory(project.id);
     } catch (error) {
       console.error("[admin] failed to remove project workspace directory", project.id, error);
+    }
+    try {
+      await rm(join(attachmentsRoot(), project.id), { recursive: true, force: true });
+    } catch (error) {
+      console.error("[admin] failed to remove project attachments", project.id, error);
     }
     const managedRepo = managedRepoPath(project.id, project.repoPath);
     if (managedRepo) {
@@ -1430,6 +1436,104 @@ app.delete("/api/v1/projects/:projectId/memories/:memoryId", async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/v1/projects/:projectId/attachments", async (c) => {
+  const { project } = await requireProjectEditor(c);
+  const body = uploadAttachmentSchema.parse(await c.req.json());
+  const mime = body.mime.toLowerCase() === "image/jpg" ? "image/jpeg" : body.mime.toLowerCase();
+  const ext = ATTACHMENT_MIME_EXT[mime];
+  if (!ext) {
+    throw new HttpError(
+      400,
+      "ATTACHMENT_TYPE_UNSUPPORTED",
+      "只支持 PNG/JPEG/WebP/GIF 图片。",
+    );
+  }
+  const base64 = body.data.replace(/^data:[^;]+;base64,/, "");
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(base64, "base64");
+  } catch {
+    throw new HttpError(400, "ATTACHMENT_INVALID", "附件不是有效的 base64。");
+  }
+  if (!buffer.length) {
+    throw new HttpError(400, "ATTACHMENT_EMPTY", "附件为空。");
+  }
+  if (buffer.length > MAX_ATTACHMENT_BYTES) {
+    throw new HttpError(
+      413,
+      "ATTACHMENT_TOO_LARGE",
+      `单个附件不能超过 ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB。`,
+    );
+  }
+
+  const id = uuidv7();
+  const relativePath = join(project.id, `${id}.${ext}`);
+  const target = resolve(attachmentsRoot(), relativePath);
+  const root = attachmentsRoot();
+  if (!target.startsWith(`${root}/`)) {
+    throw new HttpError(400, "ATTACHMENT_INVALID", "附件路径无效。");
+  }
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, buffer);
+  try {
+    await getDb().insert(attachments).values({
+      id,
+      projectId: project.id,
+      name: body.name,
+      mime,
+      size: buffer.length,
+      path: relativePath,
+      createdBy: c.get("user").id,
+    });
+  } catch (error) {
+    await rm(target, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  return c.json(
+    {
+      id,
+      name: body.name,
+      mime,
+      size: buffer.length,
+      url: attachmentUrl(project.id, id),
+    },
+    201,
+  );
+});
+
+app.get("/api/v1/projects/:projectId/attachments/:attachmentId", async (c) => {
+  const { project } = await requireProject(c);
+  const [row] = await getDb()
+    .select()
+    .from(attachments)
+    .where(
+      and(
+        eq(attachments.id, c.req.param("attachmentId")),
+        eq(attachments.projectId, project.id),
+      ),
+    )
+    .limit(1);
+  if (!row) throw new HttpError(404, "ATTACHMENT_NOT_FOUND", "Attachment not found.");
+  const target = resolve(attachmentsRoot(), row.path);
+  if (!target.startsWith(`${attachmentsRoot()}/`)) {
+    throw new HttpError(400, "ATTACHMENT_INVALID", "Attachment path is invalid.");
+  }
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(target);
+  } catch {
+    throw new HttpError(404, "ATTACHMENT_NOT_FOUND", "Attachment file is missing.");
+  }
+  return new Response(new Uint8Array(buffer), {
+    headers: {
+      "content-type": row.mime,
+      "content-length": String(buffer.length),
+      "content-disposition": `inline; filename="${row.name.replace(/["\r\n]/g, "_")}"`,
+      "cache-control": "private, max-age=3600",
+    },
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Chat
 // ---------------------------------------------------------------------------
@@ -1447,11 +1551,35 @@ app.get("/api/v1/projects/:projectId/messages", async (c) => {
   });
 });
 
+const ATTACHMENT_MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_BYTES ?? 8 * 1024 * 1024);
+
+function attachmentsRoot(): string {
+  return resolve(process.env.ATTACHMENTS_ROOT ?? "./data/attachments");
+}
+
+function attachmentUrl(projectId: string, attachmentId: string): string {
+  return `/api/v1/projects/${projectId}/attachments/${attachmentId}`;
+}
+
+const uploadAttachmentSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  mime: z.string().trim().min(1).max(100),
+  data: z.string().min(1),
+});
+
 const postMessageSchema = z.object({
-  content: z.string().min(1).max(20_000),
+  content: z.string().max(20_000).default(""),
   mentions: z.array(z.string().max(40)).max(5).optional(),
   participants: z.array(z.string().max(40)).max(8).optional(),
   replyToId: z.string().uuid().optional(),
+  attachments: z.array(z.string().uuid()).max(4).optional(),
 });
 
 app.post("/api/v1/projects/:projectId/messages", async (c) => {
@@ -1461,11 +1589,45 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
   const body = postMessageSchema.parse(await c.req.json());
   enforceDemoMessageLimit(user.id);
   const repoContext = await repoContextFor(project);
+  const content = body.content.trim() || (body.attachments?.length ? "请查看附件" : "");
+  if (!content) {
+    throw new HttpError(400, "EMPTY_MESSAGE", "消息不能为空。");
+  }
+
+  const db = getDb();
+  const attachmentRows: Array<typeof attachments.$inferSelect> = [];
+  if (body.attachments?.length) {
+    const rows = await db
+      .select()
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.projectId, project.id),
+          inArray(attachments.id, body.attachments),
+        ),
+      );
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    for (const id of body.attachments) {
+      const row = byId.get(id);
+      if (!row) throw new HttpError(400, "ATTACHMENT_NOT_FOUND", "附件不存在。");
+      if (row.messageId) throw new HttpError(409, "ATTACHMENT_USED", "附件已经发送过。");
+      attachmentRows.push(row);
+    }
+  }
+  const images = await Promise.all(
+    attachmentRows.map(async (row) => ({
+      name: row.name,
+      mime: row.mime,
+      data: (
+        await readFile(resolve(attachmentsRoot(), row.path))
+      ).toString("base64"),
+    })),
+  );
 
   // A client can answer an @-mention in the room with "接受/不接受" or
   // "批准/拒绝" instead of opening the decision inbox. Only resolve when the
   // intent is unambiguous and there is exactly one pending product item.
-  const answer = body.content.trim();
+  const answer = content;
   const accept = /^(接受|同意|可以|批准|通过|approve|accept)/i.test(answer);
   const reject = /^(拒绝|不接受|不同意|驳回|reject)/i.test(answer);
   if ((accept || reject) && answer.length <= 120) {
@@ -1553,10 +1715,25 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
     senderId: user.id,
     senderName: user.displayName,
     type: "discussion",
-    content: body.content,
+    content,
     replyToId: body.replyToId ?? null,
-    metadata: { mentions: body.mentions ?? [] },
+    metadata: {
+      mentions: body.mentions ?? [],
+      attachments: attachmentRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        mime: row.mime,
+        size: row.size,
+        url: attachmentUrl(project.id, row.id),
+      })),
+    },
   });
+  if (attachmentRows.length) {
+    await db
+      .update(attachments)
+      .set({ messageId })
+      .where(inArray(attachments.id, attachmentRows.map((row) => row.id)));
+  }
 
   const emit = projectEmitter(project.tenantId, project.id);
   await emit(EVENT_TYPES.messageCreated, {
@@ -1573,10 +1750,11 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
       projectId: project.id,
       roomId: room.id,
       userMessageId: messageId,
-      content: body.content,
+      content,
       mentions: body.mentions,
       participantKeys: body.participants,
       repoContext,
+      images,
       userId: user.id,
       userName: user.displayName,
       signal,

@@ -220,6 +220,24 @@ export const messages = pgTable(
   (t) => [index("idx_messages_room_seq").on(t.roomId, t.seq)],
 );
 
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: uuid("id").primaryKey(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    mime: text("mime").notNull(),
+    size: integer("size").notNull(),
+    path: text("path").notNull(),
+    createdBy: uuid("created_by"),
+    createdAt,
+  },
+  (t) => [index("attachments_project_idx").on(t.projectId, t.messageId)],
+);
+
 export const tasks = pgTable(
   "tasks",
   {
