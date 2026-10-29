@@ -2675,3 +2675,45 @@ details[open] > .file-dir::before {
   line-height: 16px;
   padding: 0;
 }
+
+.msg-attachment.file {
+  padding: 10px 12px;
+  color: #cbd5e1;
+  text-decoration: none;
+}
+.msg-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.msg-file small {
+  color: #8b98a5;
+  font-size: 11px;
+}
+.msg-file-icon {
+  font-size: 16px;
+  color: #7dd3fc;
+}
+.composer-file {
+  width: 92px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px solid #2a333d;
+  background: #0f151b;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 4px;
+  color: #7dd3fc;
+}
+.composer-file small {
+  color: #8b98a5;
+  font-size: 9px;
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

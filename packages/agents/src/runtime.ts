@@ -1,6 +1,6 @@
 import type { AgentTurnResult, WorkflowPhase } from "@devteam/contracts";
 import { parseAgentOutput } from "@devteam/domain";
-import { createModelGateway, type ModelGateway, type ModelImage } from "./gateway.js";
+import { createModelGateway, type ModelGateway, type ModelFile } from "./gateway.js";
 import { heuristicAttention, parseAttentionDecision } from "./attention.js";
 
 export interface GenerateRequest {
@@ -10,7 +10,7 @@ export interface GenerateRequest {
   prompt: string;
   userMessage: string;
   phase: string;
-  images?: ModelImage[];
+  files?: ModelFile[];
   signal?: AbortSignal;
   model?: { providerID: string; id: string } | null;
 }
@@ -62,7 +62,7 @@ export class OpenCodeRuntime implements AgentRuntime {
   async generate(request: GenerateRequest): Promise<AgentTurnResult> {
     const started = Date.now();
     const baseModel = request.model ?? { providerID: this.provider, id: this.modelId };
-    const model = request.images?.length
+    const model = request.files?.length
       ? {
           providerID:
             process.env.MULTIMODAL_MODEL_PROVIDER ??
@@ -78,7 +78,7 @@ export class OpenCodeRuntime implements AgentRuntime {
       system: request.system,
       prompt: request.prompt,
       model,
-      images: request.images,
+      files: request.files,
       signal: request.signal,
       timeoutMs,
     });

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { getCookie } from "hono/cookie";
@@ -1440,14 +1440,15 @@ app.post("/api/v1/projects/:projectId/attachments", async (c) => {
   const { project } = await requireProjectEditor(c);
   const body = uploadAttachmentSchema.parse(await c.req.json());
   const mime = body.mime.toLowerCase() === "image/jpg" ? "image/jpeg" : body.mime.toLowerCase();
-  const ext = ATTACHMENT_MIME_EXT[mime];
-  if (!ext) {
-    throw new HttpError(
-      400,
-      "ATTACHMENT_TYPE_UNSUPPORTED",
-      "只支持 PNG/JPEG/WebP/GIF 图片。",
-    );
+  if (!/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mime)) {
+    throw new HttpError(400, "ATTACHMENT_TYPE_INVALID", "附件 MIME 类型无效。");
   }
+  const rawExt = extname(body.name).slice(1).toLowerCase();
+  const ext = /^[a-z0-9]{1,10}$/.test(rawExt)
+    ? rawExt
+    : mime.startsWith("image/")
+      ? ATTACHMENT_MIME_EXT[mime] ?? "img"
+      : "bin";
   const base64 = body.data.replace(/^data:[^;]+;base64,/, "");
   let buffer: Buffer;
   try {
@@ -1528,7 +1529,10 @@ app.get("/api/v1/projects/:projectId/attachments/:attachmentId", async (c) => {
     headers: {
       "content-type": row.mime,
       "content-length": String(buffer.length),
-      "content-disposition": `inline; filename="${row.name.replace(/["\r\n]/g, "_")}"`,
+      "content-disposition": `${
+        row.mime.startsWith("image/") ? "inline" : "attachment"
+      }; filename="${row.name.replace(/["\r\n]/g, "_")}"`,
+      "x-content-type-options": "nosniff",
       "cache-control": "private, max-age=3600",
     },
   });
@@ -1558,7 +1562,7 @@ const ATTACHMENT_MIME_EXT: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif",
 };
-const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_BYTES ?? 8 * 1024 * 1024);
+const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_BYTES ?? 20 * 1024 * 1024);
 
 function attachmentsRoot(): string {
   return resolve(process.env.ATTACHMENTS_ROOT ?? "./data/attachments");
@@ -1579,7 +1583,7 @@ const postMessageSchema = z.object({
   mentions: z.array(z.string().max(40)).max(5).optional(),
   participants: z.array(z.string().max(40)).max(8).optional(),
   replyToId: z.string().uuid().optional(),
-  attachments: z.array(z.string().uuid()).max(4).optional(),
+  attachments: z.array(z.string().uuid()).max(8).optional(),
 });
 
 app.post("/api/v1/projects/:projectId/messages", async (c) => {
@@ -1614,15 +1618,12 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
       attachmentRows.push(row);
     }
   }
-  const images = await Promise.all(
-    attachmentRows.map(async (row) => ({
-      name: row.name,
-      mime: row.mime,
-      data: (
-        await readFile(resolve(attachmentsRoot(), row.path))
-      ).toString("base64"),
-    })),
-  );
+  const files = attachmentRows.map((row) => ({
+    name: row.name,
+    mime: row.mime,
+    size: row.size,
+    path: resolve(attachmentsRoot(), row.path),
+  }));
 
   // A client can answer an @-mention in the room with "接受/不接受" or
   // "批准/拒绝" instead of opening the decision inbox. Only resolve when the
@@ -1754,7 +1755,7 @@ app.post("/api/v1/projects/:projectId/messages", async (c) => {
       mentions: body.mentions,
       participantKeys: body.participants,
       repoContext,
-      images,
+      files,
       userId: user.id,
       userName: user.displayName,
       signal,

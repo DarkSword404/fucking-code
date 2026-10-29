@@ -32,7 +32,7 @@ describe("openai-compatible multimodal gateway", () => {
       system: "system",
       prompt: "what is this?",
       model: { providerID: "test", id: "vision-model" },
-      images: [{ name: "screen.png", mime: "image/png", data: "aGVsbG8=" }],
+      files: [{ name: "screen.png", mime: "image/png", data: "aGVsbG8=" }],
     });
 
     expect(text).toBe("seen");

@@ -27,12 +27,12 @@ interface Chip {
   label: string;
 }
 
-interface PendingImage {
+interface PendingFile {
   name: string;
   mime: string;
   size: number;
   data: string;
-  preview: string;
+  preview: string | null;
 }
 
 function attachmentsOf(message: Message): MessageAttachment[] {
@@ -122,7 +122,7 @@ export function ChatView() {
   let fileInput: HTMLInputElement | undefined;
   const projectId = () => snapshot()?.project.id ?? "";
   const [value, setValue] = createSignal(savedDrafts.get(projectId()) ?? "");
-  const [pendingImages, setPendingImages] = createSignal<PendingImage[]>([]);
+  const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [mentionOpen, setMentionOpen] = createSignal(false);
   const [pickerOpen, setPickerOpen] = createSignal(false);
@@ -131,8 +131,10 @@ export function ChatView() {
     if (!previous || previous === id) return;
     savedDrafts.set(previous, value());
     setValue(savedDrafts.get(id) ?? "");
-    for (const image of pendingImages()) URL.revokeObjectURL(image.preview);
-    setPendingImages([]);
+    for (const file of pendingFiles()) {
+      if (file.preview) URL.revokeObjectURL(file.preview);
+    }
+    setPendingFiles([]);
   }));
 
   const roles = () => snapshot()?.roles ?? [];
@@ -330,56 +332,57 @@ export function ChatView() {
     textarea?.focus();
   }
 
-  async function addImageFiles(files: FileList | File[]): Promise<void> {
-    const incoming = Array.from(files).filter((file) => file.type.startsWith("image/"));
+  async function addFiles(files: FileList | File[]): Promise<void> {
+    const incoming = Array.from(files);
     if (!incoming.length) return;
-    const room = 4 - pendingImages().length;
+    const room = 8 - pendingFiles().length;
     if (room <= 0) {
-      toast("一次最多上传 4 张图片。");
+      toast("一次最多上传 8 个附件。");
       return;
     }
     const selected = incoming.slice(0, room);
-    const next: PendingImage[] = [];
+    const next: PendingFile[] = [];
     for (const file of selected) {
-      if (file.size > 8 * 1024 * 1024) {
-        toast(`${file.name} 超过 8 MB，已跳过。`);
+      if (file.size > 20 * 1024 * 1024) {
+        toast(`${file.name} 超过 20 MB，已跳过。`);
         continue;
       }
+      const mime = file.type || "application/octet-stream";
       next.push({
-        name: file.name || "image",
-        mime: file.type === "image/jpg" ? "image/jpeg" : file.type,
+        name: file.name || "attachment",
+        mime,
         size: file.size,
         data: bytesToBase64(await file.arrayBuffer()),
-        preview: URL.createObjectURL(file),
+        preview: mime.startsWith("image/") ? URL.createObjectURL(file) : null,
       });
     }
-    if (incoming.length > selected.length) toast("一次最多上传 4 张图片。");
-    if (next.length) setPendingImages([...pendingImages(), ...next]);
+    if (incoming.length > selected.length) toast("一次最多上传 8 个附件。");
+    if (next.length) setPendingFiles([...pendingFiles(), ...next]);
   }
 
-  function removeImage(index: number): void {
-    const image = pendingImages()[index];
-    if (image) URL.revokeObjectURL(image.preview);
-    setPendingImages(pendingImages().filter((_, i) => i !== index));
+  function removeFile(index: number): void {
+    const file = pendingFiles()[index];
+    if (file?.preview) URL.revokeObjectURL(file.preview);
+    setPendingFiles(pendingFiles().filter((_, i) => i !== index));
   }
 
   async function submit() {
     const text = value().trim();
-    const images = pendingImages();
-    if ((!text && !images.length) || sending() || uploading()) return;
+    const files = pendingFiles();
+    if ((!text && !files.length) || sending() || uploading()) return;
     setUploading(true);
     const ids: string[] = [];
     try {
-      for (const image of images) {
+      for (const file of files) {
         const uploaded = await api.uploadAttachment(projectId(), {
-          name: image.name,
-          mime: image.mime,
-          data: image.data,
+          name: file.name,
+          mime: file.mime,
+          data: file.data,
         });
         ids.push(uploaded.id);
       }
     } catch (error) {
-      toast(error instanceof Error ? error.message : "图片上传失败");
+      toast(error instanceof Error ? error.message : "附件上传失败");
       setUploading(false);
       return;
     }
@@ -390,11 +393,12 @@ export function ChatView() {
     if (textarea) textarea.style.height = "42px";
     setMentionOpen(false);
     setPickerOpen(false);
-    for (const image of images) URL.revokeObjectURL(image.preview);
-    setPendingImages([]);
+    for (const file of files) {
+      if (file.preview) URL.revokeObjectURL(file.preview);
+    }
+    setPendingFiles([]);
     void sendMessage(text || "请查看附件", mentions, ids);
   }
-
 
   function onChip(chip: Chip) {
     if (chip.kind === "task") switchView("tasks");
@@ -453,13 +457,24 @@ export function ChatView() {
                         <For each={attachmentsOf(message)}>
                           {(attachment) => (
                             <a
-                              class="msg-attachment"
+                              class={`msg-attachment ${attachment.mime.startsWith("image/") ? "image" : "file"}`}
                               href={attachment.url}
                               target="_blank"
                               rel="noreferrer"
                               title={`${attachment.name} · ${Math.round(attachment.size / 1024)} KB`}
                             >
-                              <img src={attachment.url} alt={attachment.name} />
+                              <Show
+                                when={attachment.mime.startsWith("image/")}
+                                fallback={
+                                  <span class="msg-file">
+                                    <span class="msg-file-icon">▤</span>
+                                    <span>{attachment.name}</span>
+                                    <small>{Math.max(1, Math.round(attachment.size / 1024))} KB</small>
+                                  </span>
+                                }
+                              >
+                                <img src={attachment.url} alt={attachment.name} />
+                              </Show>
                             </a>
                           )}
                         </For>
@@ -590,16 +605,26 @@ export function ChatView() {
               </For>
             </div>
           </Show>
-          <Show when={pendingImages().length}>
+          <Show when={pendingFiles().length}>
             <div class="composer-attachments">
-              <For each={pendingImages()}>
-                {(image, index) => (
+              <For each={pendingFiles()}>
+                {(file, index) => (
                   <div class="composer-attachment">
-                    <img src={image.preview} alt={image.name} />
+                    <Show
+                      when={file.preview}
+                      fallback={
+                        <span class="composer-file" title={file.name}>
+                          <span>▤</span>
+                          <small>{file.name}</small>
+                        </span>
+                      }
+                    >
+                      <img src={file.preview!} alt={file.name} />
+                    </Show>
                     <button
                       type="button"
-                      title="移除图片"
-                      onClick={() => removeImage(index())}
+                      title="移除附件"
+                      onClick={() => removeFile(index())}
                     >
                       ×
                     </button>
@@ -611,12 +636,11 @@ export function ChatView() {
           <input
             ref={fileInput}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
             multiple
             style={{ display: "none" }}
             onChange={(event) => {
               const files = event.currentTarget.files;
-              if (files) void addImageFiles(files);
+              if (files) void addFiles(files);
               event.currentTarget.value = "";
             }}
           />
@@ -640,7 +664,7 @@ export function ChatView() {
               );
               if (files.length) {
                 event.preventDefault();
-                void addImageFiles(files);
+                void addFiles(files);
               }
             }}
             onKeyDown={(event) => {
@@ -656,10 +680,10 @@ export function ChatView() {
               class="btn"
               style={{ padding: "3px 9px", "font-size": "11px" }}
               disabled={sending() || uploading()}
-              title="上传图片（也可以直接粘贴截图）"
+              title="上传图片或文件（也可以直接粘贴截图）"
               onClick={() => fileInput?.click()}
             >
-              图片
+              附件
             </button>
             <button
               class={`btn ${turnParticipants() !== null ? "primary" : ""}`}
@@ -677,7 +701,7 @@ export function ChatView() {
             </Show>
             <button
               class="btn primary"
-              disabled={sending() || uploading() || (!value().trim() && !pendingImages().length)}
+              disabled={sending() || uploading() || (!value().trim() && !pendingFiles().length)}
               onClick={() => void submit()}
             >
               {uploading() ? "上传中…" : sending() ? "发送中…" : "发送"}

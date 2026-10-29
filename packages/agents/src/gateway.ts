@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { opencodeFetch } from "./opencode-client.js";
 
 export interface ModelRef {
@@ -6,18 +8,24 @@ export interface ModelRef {
   id: string;
 }
 
-export interface ModelImage {
+export interface ModelFile {
   name: string;
   mime: string;
-  /** Base64 payload without the data: prefix. */
-  data: string;
+  size?: number;
+  /** Local absolute path; preferred on a host that shares storage with OpenCode. */
+  path?: string;
+  /** Base64 payload without the data: prefix; fallback for remote gateways. */
+  data?: string;
 }
+
+/** Backwards-compatible alias for image-only callers. */
+export type ModelImage = ModelFile;
 
 export interface ModelTextRequest {
   system: string;
   prompt: string;
   model: ModelRef;
-  images?: ModelImage[];
+  files?: ModelFile[];
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -37,7 +45,7 @@ export class OpenCodeGateway implements ModelGateway {
   readonly name = "opencode";
 
   async generateText(request: ModelTextRequest): Promise<string> {
-    if (request.images?.length) return this.generateWithImages(request);
+    if (request.files?.length) return this.generateWithFiles(request);
     const response = await opencodeFetch<{ data?: { text?: string }; message?: string }>(
       "/api/experimental/generate",
       {
@@ -65,8 +73,8 @@ export class OpenCodeGateway implements ModelGateway {
    * turns we use a short-lived, tool-denied session, then delete it. Text-only
    * chat stays stateless.
    */
-  private async generateWithImages(request: ModelTextRequest): Promise<string> {
-    const images = request.images ?? [];
+  private async generateWithFiles(request: ModelTextRequest): Promise<string> {
+    const files = request.files ?? [];
     const timeoutMs = request.timeoutMs ?? 120_000;
     const created = await opencodeFetch<{ data?: { id?: string } }>("/api/session", {
       method: "POST",
@@ -91,10 +99,22 @@ export class OpenCodeGateway implements ModelGateway {
         method: "POST",
         body: JSON.stringify({
           text: `${request.system}\n\n---\n\n${request.prompt}`,
-          files: images.map((image) => ({
-            uri: `data:${image.mime};base64,${image.data}`,
-            name: image.name,
-          })),
+          files: await Promise.all(
+            files.map(async (file) => {
+              const useUri =
+                process.env.MULTIMODAL_FILE_URI !== "0" && Boolean(file.path);
+              const data = useUri
+                ? ""
+                : file.data ??
+                  (file.path ? (await readFile(file.path)).toString("base64") : "");
+              return {
+                uri: useUri
+                  ? pathToFileURL(file.path!).href
+                  : `data:${file.mime};base64,${data}`,
+                name: file.name,
+              };
+            }),
+          ),
         }),
         signal: request.signal,
         timeoutMs: 30_000,
@@ -176,13 +196,38 @@ export class OpenAICompatibleGateway implements ModelGateway {
           { role: "system", content: request.system },
           {
             role: "user",
-            content: request.images?.length
+            content: request.files?.length
               ? [
                   { type: "text", text: request.prompt },
-                  ...request.images.map((image) => ({
-                    type: "image_url",
-                    image_url: { url: `data:${image.mime};base64,${image.data}` },
-                  })),
+                  ...(await Promise.all(
+                    request.files.map(async (file) => {
+                      if (file.mime.startsWith("image/")) {
+                        const data =
+                          file.data ??
+                          (file.path
+                            ? (await readFile(file.path)).toString("base64")
+                            : "");
+                        return {
+                          type: "image_url",
+                          image_url: { url: `data:${file.mime};base64,${data}` },
+                        };
+                      }
+                      if (
+                        file.mime.startsWith("text/") ||
+                        file.mime === "application/json" ||
+                        file.mime === "application/xml"
+                      ) {
+                        const content =
+                          file.data ??
+                          (file.path ? await readFile(file.path, "utf8") : "");
+                        return {
+                          type: "text",
+                          text: `\n\n文件 ${file.name}:\n${content.slice(0, 20_000)}`,
+                        };
+                      }
+                      return { type: "text", text: `\n\n附件：${file.name}（${file.mime}）` };
+                    }),
+                  )),
                 ]
               : request.prompt,
           },

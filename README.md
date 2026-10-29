@@ -116,13 +116,14 @@ npm run dev
 2. 创建本地用户、示例项目 **Acme Notes**、主聊天室和默认团队；
 3. 在 `data/repos/acme-notes` 创建一个带失败测试的小型 Git 仓库，作为代码任务的目标。
 
-### 多模态聊天
+### 多模态聊天与文件
 
-聊天输入框支持图片：
+聊天输入框支持图片和文件：
 
-- 点「图片」选择，或直接把截图粘贴到输入框；
-- 单条消息最多 4 张，单张 8 MB；
-- 图片存在 `ATTACHMENTS_ROOT`（默认 `data/attachments`），消息里显示缩略图；
+- 点「附件」选择，或直接把截图粘贴到输入框；
+- 单条消息最多 8 个附件，单张/单个最大 20 MB；
+- 图片显示缩略图，PDF/文档/代码等显示文件卡片，可点击下载；
+- 文件存在 `ATTACHMENTS_ROOT`（默认 `data/attachments`）；
 - 删除项目时会删除该项目附件目录。
 
 模型侧：
@@ -132,7 +133,7 @@ MULTIMODAL_MODEL_PROVIDER=opencode-go
 MULTIMODAL_MODEL_ID=gemini-4-argon
 ```
 
-准确地说，**OpenCode 本身支持在 session 里上传图片和文件**；限制只在于我们用于纯文本的无状态接口 `/api/experimental/generate` 只接收 `prompt` 和 `model`，没有 `files` 字段。因此图片回合改走 `/api/session/{id}/prompt` 的 `files`，创建一个**工具全部禁用的一次性 session**，拿到结果后立即删除；纯文本聊天仍然不创建 session。OpenAI-compatible 网关则直接发送 `image_url` content parts。
+准确地说，**OpenCode 本身支持在 session 里上传图片和文件**；限制只在于我们用于纯文本的无状态接口 `/api/experimental/generate` 只接收 `prompt` 和 `model`，没有 `files` 字段。因此带附件的回合改走 `/api/session/{id}/prompt` 的 `files`，创建一个**工具全部禁用的一次性 session**，拿到结果后立即删除；纯文本聊天仍然不创建 session。OpenCode 使用本地 `file://` URI 传递附件（`MULTIMODAL_FILE_URI=1`，默认），避免大文件 base64 膨胀。OpenAI-compatible 网关对图片发送 `image_url`，对文本类文件把内容拼进 prompt。压缩包、二进制可执行文件等需要先解压/提取，模型不会自动执行文件内容。
 
 ### Agent 工具与 workbench
 
