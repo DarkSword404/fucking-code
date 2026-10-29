@@ -82,13 +82,28 @@ export function buildPrompt(
 
   const recent = bundle.messages
     .slice(-20)
-    .map(
-      (m) =>
-        `[${m.senderType === "user" ? "甲方" : m.senderName}] ${truncate(
-          m.content.replace(/\s+/g, " "),
-          m.senderType === "agent" ? 1800 : 700,
-        )}`,
-    )
+    .map((m) => {
+      const raw = m.metadata?.["attachments"];
+      const attachments = Array.isArray(raw)
+        ? raw
+            .map((item) =>
+              item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string"
+                ? (item as { name: string; archive?: boolean; entries?: number }).name +
+                  ((item as { archive?: boolean; entries?: number }).archive
+                    ? `（压缩包，${(item as { entries?: number }).entries ?? 0} 个文件）`
+                    : "")
+                : "",
+            )
+            .filter(Boolean)
+        : [];
+      const suffix = attachments.length
+        ? ` [附件：${attachments.join("、")}]`
+        : "";
+      return `[${m.senderType === "user" ? "甲方" : m.senderName}] ${truncate(
+        m.content.replace(/\s+/g, " "),
+        m.senderType === "agent" ? 1800 : 700,
+      )}${suffix}`;
+    })
     .join("\n");
 
   const taskLines = bundle.tasks

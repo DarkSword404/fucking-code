@@ -1,6 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createExtractorFromData } from "node-unrar-js";
+import { path7za } from "7zip-bin";
 import { pipeline } from "node:stream/promises";
 import * as tar from "tar";
 import yauzl from "yauzl";
@@ -17,6 +21,8 @@ export interface ExtractedArchive {
   bytes: number;
 }
 
+const execFileAsync = promisify(execFile);
+
 const DEFAULT_LIMITS: ArchiveLimits = {
   maxEntries: Number(process.env.ARCHIVE_MAX_ENTRIES ?? 300),
   maxFileBytes: Number(process.env.ARCHIVE_MAX_FILE_BYTES ?? 20 * 1024 * 1024),
@@ -30,19 +36,26 @@ export function isArchive(name: string, mime: string): boolean {
     lower.endsWith(".tar") ||
     lower.endsWith(".tar.gz") ||
     lower.endsWith(".tgz") ||
+    lower.endsWith(".7z") ||
+    lower.endsWith(".rar") ||
     mime === "application/zip" ||
     mime === "application/x-zip-compressed" ||
     mime === "application/x-tar" ||
     mime === "application/gzip" ||
-    mime === "application/x-gzip"
+    mime === "application/x-gzip" ||
+    mime === "application/x-7z-compressed" ||
+    mime === "application/vnd.rar" ||
+    mime === "application/x-rar-compressed"
   );
 }
 
-export function archiveKind(name: string): "zip" | "tar" | "tar.gz" | null {
+export function archiveKind(name: string): "zip" | "tar" | "tar.gz" | "7z" | "rar" | null {
   const lower = name.toLowerCase();
   if (lower.endsWith(".zip")) return "zip";
   if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) return "tar.gz";
   if (lower.endsWith(".tar")) return "tar";
+  if (lower.endsWith(".7z")) return "7z";
+  if (lower.endsWith(".rar")) return "rar";
   return null;
 }
 
@@ -223,6 +236,125 @@ async function extractTar(
   return { files, entries, bytes: total };
 }
 
+async function extract7z(
+  archivePath: string,
+  destination: string,
+  limits: ArchiveLimits,
+): Promise<ExtractedArchive> {
+  await chmod(path7za, 0o755).catch(() => undefined);
+  const { stdout } = await execFileAsync(path7za, ["l", "-slt", archivePath], {
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  let entries = 0;
+  let total = 0;
+  let current: Record<string, string> = {};
+  const consume = () => {
+    if (!current["Path"]) return;
+    const name = current["Path"]!.replace(/\\/g, "/");
+    const isDir = current["Folder"] === "+";
+    if (isDir) return;
+    entries += 1;
+    if (entries > limits.maxEntries) {
+      throw new Error(`archive has more than ${limits.maxEntries} entries`);
+    }
+    const size = Number(current["Size"] ?? 0);
+    if (Number.isFinite(size)) {
+      if (size > limits.maxFileBytes) throw new Error(`archive entry too large: ${name}`);
+      total += size;
+      if (total > limits.maxTotalBytes) {
+        throw new Error("archive expands beyond the total size limit");
+      }
+    }
+    if (current["Attributes"]?.startsWith("l")) {
+      throw new Error(`symlink entries are not allowed: ${name}`);
+    }
+    safeTarget(destination, name);
+  };
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) {
+      consume();
+      current = {};
+      continue;
+    }
+    const index = line.indexOf(" = ");
+    if (index > 0) current[line.slice(0, index)] = line.slice(index + 3);
+  }
+  consume();
+
+  const temporary = `${destination}.tmp`;
+  await rm(temporary, { recursive: true, force: true });
+  await mkdir(temporary, { recursive: true });
+  try {
+    await execFileAsync(
+      path7za,
+      ["x", "-y", "-bd", `-o${temporary}`, archivePath],
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024 },
+    );
+    await rm(destination, { recursive: true, force: true });
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+  const files = await listFiles(destination, limits.maxEntries);
+  return { files, entries, bytes: total };
+}
+
+async function extractRar(
+  archivePath: string,
+  destination: string,
+  limits: ArchiveLimits,
+): Promise<ExtractedArchive> {
+  const buffer = await readFile(archivePath);
+  const extractor = await createExtractorFromData({
+    data: buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    ) as ArrayBuffer,
+  });
+  const list = extractor.getFileList();
+  if (list.arcHeader.flags.volume) {
+    throw new Error("multi-volume RAR archives are not supported");
+  }
+  let entries = 0;
+  let total = 0;
+  const headers = [...list.fileHeaders];
+  for (const header of headers) {
+    if (header.flags.directory) continue;
+    if (header.flags.encrypted) {
+      throw new Error("encrypted RAR archives are not supported");
+    }
+    entries += 1;
+    if (entries > limits.maxEntries) {
+      throw new Error(`archive has more than ${limits.maxEntries} entries`);
+    }
+    if (header.unpSize > limits.maxFileBytes) {
+      throw new Error(`archive entry too large: ${header.name}`);
+    }
+    total += header.unpSize;
+    if (total > limits.maxTotalBytes) {
+      throw new Error("archive expands beyond the total size limit");
+    }
+    safeTarget(destination, header.name);
+  }
+
+  await mkdir(destination, { recursive: true });
+  const extracted = extractor.extract();
+  for (const file of extracted.files) {
+    if (file.fileHeader.flags.directory) continue;
+    if (!file.extraction) {
+      throw new Error(`cannot read RAR entry: ${file.fileHeader.name}`);
+    }
+    const target = safeTarget(destination, file.fileHeader.name);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from(file.extraction));
+  }
+  const files = await listFiles(destination, limits.maxEntries);
+  return { files, entries, bytes: total };
+}
+
 export async function extractArchive(
   archivePath: string,
   name: string,
@@ -234,9 +366,10 @@ export async function extractArchive(
   await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
   try {
-    return kind === "zip"
-      ? await extractZip(archivePath, destination, limits)
-      : await extractTar(archivePath, destination, limits);
+    if (kind === "zip") return await extractZip(archivePath, destination, limits);
+    if (kind === "7z") return await extract7z(archivePath, destination, limits);
+    if (kind === "rar") return await extractRar(archivePath, destination, limits);
+    return await extractTar(archivePath, destination, limits);
   } catch (error) {
     await rm(destination, { recursive: true, force: true }).catch(() => undefined);
     throw error;
