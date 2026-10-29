@@ -37,7 +37,7 @@ import {
   validateRepoPath,
 } from "@devteam/workspace";
 import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
-import { previewUrlForProject, startPreview } from "./preview.js";
+import { previewLocalUrlForProject, previewUrlForProject, startPreview } from "./preview.js";
 
 const schedulerLocks = new Set<string>();
 /** Projects with a task in the middle of workspace allocation. */
@@ -451,6 +451,8 @@ export async function recoverOrphanedTasks(): Promise<void> {
     .set({ status: "accepted", updatedAt: new Date() })
     .where(eq(artifacts.status, "in_review"));
   // Engineering approvals are internal as well.
+  // Never auto-approve product approvals on restart. Only engineering gates
+  // are safe to recover; product approvals must stay pending for the client.
   await db
     .update(approvals)
     .set({
@@ -459,7 +461,12 @@ export async function recoverOrphanedTasks(): Promise<void> {
       decidedAt: new Date(),
       reason: "工程门禁由 QA / Lead 内部评审通过",
     })
-    .where(eq(approvals.status, "pending"));
+    .where(
+      and(
+        eq(approvals.status, "pending"),
+        sql`${approvals.targetType} NOT LIKE 'product%'`,
+      ),
+    );
   const rows = await db
     .select({ task: tasks, workspace: workspaces })
     .from(tasks)
@@ -716,7 +723,7 @@ async function ensurePreviewForTask(
   project: ProjectRow,
   task: TaskRow,
 ): Promise<string | undefined> {
-  const existing = previewUrlForProject(project.id);
+  const existing = previewLocalUrlForProject(project.id) ?? previewUrlForProject(project.id);
   if (existing) return existing;
   if (!project.repoPath) return undefined;
   const text = `${task.title} ${task.description}`;
@@ -726,7 +733,7 @@ async function ensurePreviewForTask(
   if (!needsPreview) return undefined;
   try {
     const preview = await startPreview(project.id, project.repoPath);
-    return preview.url;
+    return previewLocalUrlForProject(project.id) ?? preview.url;
   } catch (error) {
     console.error("[auto-dev] could not start preview for task", error);
     return undefined;
@@ -1277,7 +1284,7 @@ async function operationsHeartbeat(project: ProjectRow): Promise<void> {
     .then((response) => response.status)
     .catch(() => 0);
 
-  let previewUrl = previewUrlForProject(project.id);
+  let previewUrl = previewLocalUrlForProject(project.id) ?? previewUrlForProject(project.id);
   let previewStatus = 0;
   if (!previewUrl && project.repoPath) {
     try {

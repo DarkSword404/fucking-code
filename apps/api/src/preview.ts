@@ -11,6 +11,7 @@ interface PreviewState {
   token: string;
   port: number;
   url: string;
+  localUrl: string;
   startedAt: number;
   output: string;
   alive: () => boolean;
@@ -298,6 +299,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
       token,
       port,
       url,
+      localUrl: `http://127.0.0.1:${port}/`,
       startedAt: Date.now(),
       output,
       alive: docker.alive,
@@ -359,6 +361,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
     token,
     port,
     url: `/preview/${token}/`,
+    localUrl: `http://127.0.0.1:${port}/`,
     startedAt: Date.now(),
     output,
     alive: () => child.exitCode === null,
@@ -395,6 +398,12 @@ export function previewForToken(token: string): PreviewState | undefined {
 export function previewUrlForProject(projectId: string): string | null {
   const preview = previews.get(projectId);
   return preview?.url ?? null;
+}
+
+/** Host-local URL for health checks and agents; never exposes a public port. */
+export function previewLocalUrlForProject(projectId: string): string | null {
+  const preview = previews.get(projectId);
+  return preview?.localUrl ?? null;
 }
 
 export function stopPreview(projectId: string): void {

@@ -207,8 +207,9 @@ Group=$RUN_USER
 WorkingDirectory=$APP_DIR
 Environment=HOME=$RUN_HOME
 Environment=NODE_ENV=production
+Environment=PATH=$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$(command -v npm) start
+ExecStart=$(command -v node) $APP_DIR/node_modules/tsx/dist/cli.mjs $APP_DIR/apps/api/src/index.ts
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM

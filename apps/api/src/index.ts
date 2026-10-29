@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
-import { DEV_IDS, getDb, memories, migrate, normalizeArtifacts, projects, seed } from "@devteam/db";
+import { closeDb, DEV_IDS, getDb, memories, migrate, normalizeArtifacts, projects, seed } from "@devteam/db";
 import { cleanupManagedContainers, ensureDemoRepo } from "@devteam/workspace";
 
 try {
@@ -46,7 +46,7 @@ setInterval(() => {
   });
 }, 6 * 60 * 60 * 1000).unref();
 
-const { cleanupOrphanedPreviews } = await import("./preview.js");
+const { cleanupOrphanedPreviews, stopAllPreviews } = await import("./preview.js");
 cleanupManagedContainers("runner");
 cleanupOrphanedPreviews();
 
@@ -75,7 +75,39 @@ if (process.env.NODE_ENV === "production") {
 const port = Number(process.env.PORT ?? 8787);
 const hostname = process.env.HOST ?? "127.0.0.1";
 
-serve({ fetch: app.fetch, port, hostname }, (info) => {
+const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`[devteam] API listening on http://${info.address}:${info.port}`);
   console.log(`[devteam] demo repo: ${repoPath}`);
 });
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[devteam] ${signal} received; shutting down cleanly`);
+  try {
+    await Promise.race([
+      new Promise<void>((resolve) => server.close(() => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref()),
+    ]);
+  } catch {
+    // ignore close errors
+  }
+  try {
+    stopAllPreviews();
+  } catch (error) {
+    console.error("[devteam] failed to stop previews", error);
+  }
+  try {
+    await closeDb();
+  } catch (error) {
+    console.error("[devteam] failed to close database", error);
+  }
+  process.exit(0);
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    void shutdown(signal);
+  });
+}

@@ -188,4 +188,4 @@ HOST_VALUE="${HOST_VALUE:-127.0.0.1}"
 
 say "Starting Fucking Code…"
 say "Listening on http://${HOST_VALUE}:${PORT_VALUE} (press Ctrl+C to stop)"
-exec npm start
+exec env NODE_ENV=production ./node_modules/.bin/tsx apps/api/src/index.ts
