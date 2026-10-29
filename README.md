@@ -132,7 +132,7 @@ MULTIMODAL_MODEL_PROVIDER=opencode-go
 MULTIMODAL_MODEL_ID=gemini-4-argon
 ```
 
-OpenCode 网关的 stateless 接口不支持图片，因此图片回合会创建一个**工具全部禁用的一次性 session**，拿到描述后立即删除；纯文本聊天仍然不创建 session。OpenAI-compatible 网关则直接发送 `image_url` content parts。
+准确地说，**OpenCode 本身支持在 session 里上传图片和文件**；限制只在于我们用于纯文本的无状态接口 `/api/experimental/generate` 只接收 `prompt` 和 `model`，没有 `files` 字段。因此图片回合改走 `/api/session/{id}/prompt` 的 `files`，创建一个**工具全部禁用的一次性 session**，拿到结果后立即删除；纯文本聊天仍然不创建 session。OpenAI-compatible 网关则直接发送 `image_url` content parts。
 
 ### Agent 工具与 workbench
 
