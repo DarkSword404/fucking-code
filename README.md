@@ -239,7 +239,18 @@ PREVIEW_MODE=docker
 PREVIEW_TTL_MS=1800000
 ```
 
-预览容器只发布到 `127.0.0.1`，默认 30 分钟 TTL，退出或超时会自动删除；仍使用同一个 worktree 挂载和资源限制。应用重启时会按 `fucking-code.managed` + `APP_INSTANCE_ID` 清理上一次遗留的 runner/preview 容器。
+预览容器默认发布到 `127.0.0.1`，通过 `/preview/<token>/` 代理访问。也可以改成直接 `ip:port`：
+
+```env
+PREVIEW_MODE=docker
+PREVIEW_PUBLIC=1
+PREVIEW_PUBLIC_HOST=203.0.113.10
+PREVIEW_PUBLIC_SCHEME=http
+PREVIEW_PORT_MIN=40000
+PREVIEW_PORT_MAX=40099
+```
+
+这样 `POST /preview` 会返回 `http://203.0.113.10:40046/` 这样的地址，不再经过路径前缀。需要同时在云安全组/防火墙放通对应的端口范围。预览仍有 30 分钟 TTL，退出或超时自动删除；应用重启时会按 `fucking-code.managed` + `APP_INSTANCE_ID` 清理遗留容器。
 
 需要数据库或外部服务的项目仍建议先用 `PREVIEW_MODE=host`。
 

@@ -1296,7 +1296,10 @@ async function operationsHeartbeat(project: ProjectRow): Promise<void> {
     }
   }
   if (previewUrl) {
-    previewStatus = await fetch(`http://127.0.0.1:${port}${previewUrl}`, {
+    const target = previewUrl.startsWith("http")
+      ? previewUrl
+      : `http://127.0.0.1:${port}${previewUrl}`;
+    previewStatus = await fetch(target, {
       signal: AbortSignal.timeout(4_000),
     })
       .then((response) => response.status)

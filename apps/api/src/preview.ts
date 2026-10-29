@@ -10,10 +10,34 @@ interface PreviewState {
   projectId: string;
   token: string;
   port: number;
+  url: string;
   startedAt: number;
   output: string;
   alive: () => boolean;
   stop: () => void;
+}
+
+function publicPreviewEnabled(): boolean {
+  return process.env.PREVIEW_PUBLIC === "1";
+}
+
+function publicPreviewHost(): string {
+  const explicit = process.env.PREVIEW_PUBLIC_HOST?.trim();
+  if (explicit) return explicit;
+  const base =
+    process.env.PUBLIC_BASE_URL ??
+    process.env.WEB_ORIGIN?.split(",")[0] ??
+    "http://127.0.0.1";
+  try {
+    return new URL(base).hostname;
+  } catch {
+    return "127.0.0.1";
+  }
+}
+
+function publicPreviewUrl(port: number): string {
+  const scheme = process.env.PREVIEW_PUBLIC_SCHEME ?? "http";
+  return `${scheme}://${publicPreviewHost()}:${port}/`;
 }
 
 const previews = new Map<string, PreviewState>();
@@ -27,7 +51,23 @@ function killPreview(child: ChildProcess): void {
   }
 }
 
+function canListen(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "0.0.0.0", () => server.close(() => resolve(true)));
+  });
+}
+
 async function freePort(): Promise<number> {
+  const min = Number(process.env.PREVIEW_PORT_MIN ?? 0);
+  const max = Number(process.env.PREVIEW_PORT_MAX ?? 0);
+  if (min > 0 && max >= min) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = min + Math.floor(Math.random() * (max - min + 1));
+      if (await canListen(candidate)) return candidate;
+    }
+  }
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
@@ -115,6 +155,7 @@ function startDockerPreview(input: {
   repoPath: string;
   port: number;
   script: string | null;
+  publicMode: boolean;
 }): DockerPreview {
   const image = process.env.PREVIEW_IMAGE?.trim() || defaultRunnerImage(input.repoPath);
   const dockerBin = process.env.DOCKER_BIN ?? "docker";
@@ -167,7 +208,7 @@ function startDockerPreview(input: {
     "-e",
     `REPO_PATH=${input.repoPath}`,
     "-p",
-    `127.0.0.1:${input.port}:${input.port}`,
+    `${input.publicMode ? "0.0.0.0" : "127.0.0.1"}:${input.port}:${input.port}`,
   ];
   if (volumesFrom) {
     args.push("--volumes-from", volumesFrom, "-w", input.repoPath);
@@ -215,7 +256,7 @@ export function cleanupOrphanedPreviews(): number {
 export async function startPreview(projectId: string, repoPath: string): Promise<{ url: string; port: number }> {
   const existing = previews.get(projectId);
   if (existing && existing.alive()) {
-    return { url: `/preview/${existing.token}/`, port: existing.port };
+    return { url: existing.url, port: existing.port };
   }
   if (existing) {
     existing.stop();
@@ -243,7 +284,9 @@ export async function startPreview(projectId: string, repoPath: string): Promise
   let state: PreviewState;
 
   if (mode === "docker") {
-    const docker = startDockerPreview({ repoPath, port, script });
+    const publicMode = publicPreviewEnabled();
+    const docker = startDockerPreview({ repoPath, port, script, publicMode });
+    const url = publicMode ? publicPreviewUrl(port) : `/preview/${token}/`;
     const collect = (chunk: Buffer) => {
       output = `${output}${chunk.toString()}`.slice(-8000);
       state.output = output;
@@ -254,6 +297,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
       projectId,
       token,
       port,
+      url,
       startedAt: Date.now(),
       output,
       alive: docker.alive,
@@ -275,7 +319,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
       previews.delete(projectId);
       throw error;
     }
-    return { url: `/preview/${token}/`, port };
+    return { url, port };
   }
 
   let child: ChildProcess;
@@ -314,6 +358,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
     projectId,
     token,
     port,
+    url: `/preview/${token}/`,
     startedAt: Date.now(),
     output,
     alive: () => child.exitCode === null,
@@ -339,7 +384,7 @@ export async function startPreview(projectId: string, repoPath: string): Promise
       previews.delete(projectId);
     }, ttlMs).unref();
   }
-  return { url: `/preview/${token}/`, port };
+  return { url: state.url, port };
 }
 
 export function previewForToken(token: string): PreviewState | undefined {
@@ -349,7 +394,7 @@ export function previewForToken(token: string): PreviewState | undefined {
 /** Relative preview URL for a project, if one is running. */
 export function previewUrlForProject(projectId: string): string | null {
   const preview = previews.get(projectId);
-  return preview ? `/preview/${preview.token}/` : null;
+  return preview?.url ?? null;
 }
 
 export function stopPreview(projectId: string): void {
