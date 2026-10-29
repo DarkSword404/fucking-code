@@ -2717,3 +2717,19 @@ details[open] > .file-dir::before {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.msg-attachment.file {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  max-width: 360px;
+  line-height: 1.2;
+}
+.msg-attachment.file .msg-file {
+  display: flex;
+  width: 100%;
+}
+
+.msg-attachments {
+  align-items: flex-start;
+}
