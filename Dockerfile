@@ -20,4 +20,4 @@ ENV HOST=0.0.0.0
 
 EXPOSE 8787
 
-CMD ["node_modules/.bin/tsx", "apps/api/src/index.ts"]
+CMD ["node", "--import", "tsx", "apps/api/src/index.ts"]

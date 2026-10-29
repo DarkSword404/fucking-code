@@ -179,12 +179,15 @@ export class Orchestrator {
       return Number.isFinite(parsed) && parsed > 0 ? parsed : Infinity;
     };
     this.maxRounds = positiveLimit(options.maxRounds, Number(process.env.MAX_ROUNDS ?? 0));
-    // One reply at a time. Other willing speakers are queued for later rounds,
-    // so the room reads like a conversation instead of a panel broadcast.
-    this.maxSpeakersPerRound = Math.min(
-      1,
-      options.maxSpeakersPerRound ?? Number(process.env.MAX_SPEAKERS_PER_ROUND ?? 1),
-    );
+    // The default is one speaker for a natural conversation, but operators can
+    // raise this to 2–3 for parallel independent replies. The posting order is
+    // still deterministic, so a higher value does not scramble the transcript.
+    const configuredSpeakers =
+      options.maxSpeakersPerRound ?? Number(process.env.MAX_SPEAKERS_PER_ROUND ?? 1);
+    this.maxSpeakersPerRound =
+      Number.isFinite(configuredSpeakers) && configuredSpeakers > 0
+        ? Math.max(1, Math.floor(configuredSpeakers))
+        : 1;
     this.maxMessagesPerTurn = positiveLimit(
       options.maxMessagesPerTurn,
       Number(process.env.MAX_MESSAGES_PER_TURN ?? 0),
