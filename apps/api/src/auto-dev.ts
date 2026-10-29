@@ -13,7 +13,6 @@ import {
   agentRuns,
   approvals,
   artifacts,
-  decisions,
   loadRoomBundle,
   messages,
   projects,
@@ -65,7 +64,7 @@ const internalMergeLocks = new Set<string>();
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
-  const [pendingApprovals, pendingArtifacts, proposedDecisions] = await Promise.all([
+  const [pendingApprovals, pendingArtifacts] = await Promise.all([
     db
       .select({ id: approvals.id })
       .from(approvals)
@@ -76,20 +75,12 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
       .from(artifacts)
       .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")))
       .limit(1),
-    db
-      .select({ id: decisions.id })
-      .from(decisions)
-      .where(and(eq(decisions.projectId, projectId), eq(decisions.status, "proposed")))
-      .limit(1),
   ]);
-  // Engineering decisions are auto-accepted, so only genuine product decisions
-  // remain proposed. Those intentionally wait for the client; review/testing
-  // tasks stay internal and do not block.
-  return (
-    pendingApprovals.length > 0 ||
-    pendingArtifacts.length > 0 ||
-    proposedDecisions.length > 0
-  );
+  // Engineering decisions are auto-accepted. Product decisions are recorded
+  // in the decision inbox but must not freeze coding: the team continues with
+  // a conservative default and the client can accept or override later. Only
+  // explicit approvals and artifacts awaiting review are hard blockers.
+  return pendingApprovals.length > 0 || pendingArtifacts.length > 0;
 }
 
 /**

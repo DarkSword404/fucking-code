@@ -974,7 +974,7 @@ export class Orchestrator {
               ? `${result.text}\n\n${askAction.question}`
               : result.text;
           const clientPrompt = clientDecision
-            ? `产品决策待确认：${decisionAction!.title}\n${decisionAction!.rationale ?? ""}\n请回复「接受」或「不接受」，或在右侧产品决策中处理。`
+            ? `产品决策待确认：${decisionAction!.title}\n${decisionAction!.rationale ?? ""}\n不阻塞当前开发；可稍后在右侧产品决策中接受或拒绝。`
             : clientApproval
               ? `产品审批待确认：${approvalAction!.title}\n${approvalAction!.reason ?? ""}\n请回复「批准」或「拒绝」，或在右侧产品审批中处理。`
               : "";
@@ -983,7 +983,7 @@ export class Orchestrator {
             clientPrompt &&
             !(decisionAction?.title && content.includes(decisionAction.title)) &&
             !(approvalAction?.title && content.includes(approvalAction.title))
-              ? `${content}\n\n${clientPrompt}`
+              ? `${content}\n\n${clientDecision ? "（该产品决策不阻塞开发，可稍后在右侧决策面板处理。）\n" : ""}${clientPrompt}`
               : content;
           const finalContent =
             clientFacing && !withPrompt.includes("@甲方") ? `@甲方 ${withPrompt}` : withPrompt;
@@ -1086,7 +1086,7 @@ export class Orchestrator {
             activeKeys.add(applied.handoffTo);
             forcedNext.set(applied.handoffTo, "收到同事的交接");
           }
-          if (applied.askedUser || clientFacing) waitingForUser = true;
+          if (applied.askedUser || clientQuestion || clientApproval) waitingForUser = true;
         }
 
         if (!posted.length) break;
