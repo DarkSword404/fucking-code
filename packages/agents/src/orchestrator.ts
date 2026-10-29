@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   EVENT_TYPES,
   type MessageType,
   type TurnSummary,
   type WorkflowPhase,
 } from "@devteam/contracts";
-import { agentRuns, captureAcceptedSpec, getDb, insertMessage, latestArtifactContent, loadRoomBundle, messages, projects, type RoleRow, type RoomBundle } from "@devteam/db";
+import { agentRuns, captureAcceptedSpec, getDb, insertMessage, latestArtifactContent, loadRoomBundle, messages, projects, tasks, type RoleRow, type RoomBundle } from "@devteam/db";
 import { STAGE_POLICIES, isEngineeringTopic, uuidv7, type ValidatedAgentAction } from "@devteam/domain";
 import { applyActions, type EmitFn } from "./actions.js";
 import {
@@ -116,6 +116,42 @@ async function mapLimit<T, R>(
   return results;
 }
 
+function parseAssignmentReview(text: string): {
+  accepted: string[];
+  rejected: Array<{ taskId: string; reason: string }>;
+} | null {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+  const candidate = (fenced?.[1] ?? text).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(candidate.slice(start, end + 1)) as {
+      accepted?: unknown;
+      rejected?: unknown;
+    };
+    const accepted = Array.isArray(parsed.accepted)
+      ? parsed.accepted.filter((id): id is string => typeof id === "string")
+      : [];
+    const rejected = Array.isArray(parsed.rejected)
+      ? parsed.rejected
+          .filter(
+            (item): item is { taskId: string; reason?: string } =>
+              Boolean(item) &&
+              typeof item === "object" &&
+              typeof (item as { taskId?: unknown }).taskId === "string",
+          )
+          .map((item) => ({
+            taskId: item.taskId,
+            reason: typeof item.reason === "string" ? item.reason.slice(0, 500) : "未说明原因",
+          }))
+      : [];
+    return { accepted, rejected };
+  } catch {
+    return null;
+  }
+}
+
 interface AttentionOutcome {
   role: RoleRow;
   speak: boolean;
@@ -159,6 +195,185 @@ export class Orchestrator {
     );
     this.attentionConcurrency =
       options.attentionConcurrency ?? Number(process.env.ATTENTION_CONCURRENCY ?? 4);
+  }
+
+  /**
+   * Lead only proposes assignments. The assigned role must explicitly accept
+   * before a task becomes runnable. This is an internal confirmation step and
+   * never asks the client to approve execution details.
+   */
+  private async reviewTaskAssignments(
+    bundle: RoomBundle,
+    taskIds: string[],
+    turnId: string,
+  ): Promise<void> {
+    if (!taskIds.length) return;
+    const db = getDb();
+    const rows = await db.select().from(tasks).where(inArray(tasks.id, taskIds));
+    const groups = new Map<string, typeof rows>();
+    for (const task of rows) {
+      if (task.status !== "proposed" || !task.roleKey) continue;
+      const list = groups.get(task.roleKey) ?? [];
+      list.push(task);
+      groups.set(task.roleKey, list);
+    }
+    if (!groups.size) return;
+
+    await mapLimit([...groups.entries()], 4, async ([roleKey, assigned]) => {
+      const role = bundle.roles.find((item) => item.key === roleKey && item.enabled);
+      if (!role) {
+        await db
+          .update(tasks)
+          .set({
+            status: "needs_replan",
+            blockedReason: `找不到可用的承接角色：${roleKey}`,
+            updatedAt: new Date(),
+          })
+          .where(and(inArray(tasks.id, assigned.map((task) => task.id)), eq(tasks.status, "proposed")));
+        return;
+      }
+
+      const prompt = [
+        `你是 ${role.displayName}（${role.key}），负责承接下列任务。`,
+        "只判断这些任务是否属于你的职责、验收标准是否可执行、是否存在明显依赖/范围问题。",
+        "不要向甲方提问；需要产品决策时在 reason 里写清楚，由 Lead/PM 处理。",
+        "只输出一个 JSON 对象，不要 markdown：",
+        '{"accepted":["task-id"],"rejected":[{"taskId":"task-id","reason":"具体原因"}]}',
+        "默认接受职责明确、验收可执行的任务。不要因为实现有难度就拒绝。",
+        "",
+        "任务：",
+        ...assigned.map((task) =>
+          JSON.stringify({
+            taskId: task.id,
+            title: task.title,
+            description: task.description.slice(0, 1_500),
+            acceptance: task.acceptance,
+          }),
+        ),
+      ].join("\n");
+
+      try {
+        const result = await this.runtime.generate({
+          roleKey: role.key,
+          roleName: role.displayName,
+          system: `你是 ${role.displayName}。这是内部任务承接确认，不面向甲方。`,
+          prompt,
+          userMessage: "确认任务承接",
+          phase: bundle.project.phase,
+          model:
+            role.modelProvider && role.modelId
+              ? { providerID: role.modelProvider, id: role.modelId }
+              : null,
+        });
+        const review = parseAssignmentReview(result.text);
+        if (!review) {
+          await db
+            .update(tasks)
+            .set({
+              status: "needs_replan",
+              blockedReason: "承接角色没有返回可解析的确认结果",
+              updatedAt: new Date(),
+            })
+            .where(and(inArray(tasks.id, assigned.map((task) => task.id)), eq(tasks.status, "proposed")));
+          return;
+        }
+        const acceptedIds = new Set(review.accepted);
+        const rejected = new Map(review.rejected.map((item) => [item.taskId, item.reason]));
+        const acceptedTasks: string[] = [];
+        const rejectedTasks: Array<{ taskId: string; title: string; reason: string }> = [];
+        for (const task of assigned) {
+          if (acceptedIds.has(task.id)) {
+            await db
+              .update(tasks)
+              .set({
+                status: "ready",
+                blockedReason: null,
+                evidence: {
+                  ...task.evidence,
+                  assignment: {
+                    roleKey: role.key,
+                    acceptedAt: new Date().toISOString(),
+                    turnId,
+                  },
+                },
+                updatedAt: new Date(),
+              })
+              .where(and(eq(tasks.id, task.id), eq(tasks.status, "proposed")));
+            acceptedTasks.push(task.id);
+            await this.emit(EVENT_TYPES.taskChanged, {
+              taskId: task.id,
+              action: "updated",
+              status: "ready",
+              assignedTo: role.key,
+            });
+          } else if (rejected.has(task.id)) {
+            const reason = rejected.get(task.id) ?? "未说明原因";
+            await db
+              .update(tasks)
+              .set({
+                status: "needs_replan",
+                blockedReason: `承接角色 ${role.displayName} 拒绝：${reason}`.slice(0, 1_000),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(tasks.id, task.id), eq(tasks.status, "proposed")));
+            rejectedTasks.push({ taskId: task.id, title: task.title, reason });
+            await this.emit(EVENT_TYPES.taskChanged, {
+              taskId: task.id,
+              action: "updated",
+              status: "needs_replan",
+              reason,
+            });
+          }
+        }
+        if (!acceptedTasks.length && !rejectedTasks.length) return;
+        const messageId = uuidv7();
+        await insertMessage({
+          id: messageId,
+          tenantId: bundle.project.tenantId,
+          projectId: bundle.project.id,
+          roomId: bundle.room.id,
+          senderType: "agent",
+          senderId: role.id,
+          senderName: role.displayName,
+          type: "task_handoff",
+          content: [
+            `任务承接确认：接受 ${acceptedTasks.length} 个，退回 ${rejectedTasks.length} 个。`,
+            ...rejectedTasks.map((item) => `- 退回「${item.title}」：${item.reason}`),
+          ].join("\n"),
+          metadata: {
+            kind: "task_assignment",
+            roleKey: role.key,
+            turnId,
+            chips: [
+              ...acceptedTasks.map((id) => ({
+                kind: "task",
+                label: `已承接：${assigned.find((task) => task.id === id)?.title ?? id}`,
+              })),
+              ...rejectedTasks.map((item) => ({
+                kind: "task",
+                label: `退回：${item.title}`,
+              })),
+            ],
+          },
+        });
+        await this.emit(EVENT_TYPES.messageCreated, {
+          messageId,
+          roomId: bundle.room.id,
+          roleKey: role.key,
+          senderName: role.displayName,
+          type: "task_handoff",
+        });
+      } catch (error) {
+        await db
+          .update(tasks)
+          .set({
+            status: "needs_replan",
+            blockedReason: `承接确认失败：${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
+            updatedAt: new Date(),
+          })
+          .where(and(inArray(tasks.id, assigned.map((task) => task.id)), eq(tasks.status, "proposed")));
+      }
+    });
   }
 
   private async extractPlanTasks(
@@ -305,6 +520,7 @@ export class Orchestrator {
         messageId,
         emit: this.emit,
       });
+      await this.reviewTaskAssignments(bundle, applied.taskIds, turnId);
 
       await db
         .update(agentRuns)
@@ -813,6 +1029,9 @@ export class Orchestrator {
             messageId,
             emit: this.emit,
           });
+          if (applied.taskIds.length && !waitingForUser) {
+            await this.reviewTaskAssignments(bundle, applied.taskIds, turnId);
+          }
 
           await db
             .update(agentRuns)

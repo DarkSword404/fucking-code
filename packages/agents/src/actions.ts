@@ -184,7 +184,7 @@ export async function applyActions(
             projectId: ctx.bundle.project.id,
             title: a.title,
             description: a.description,
-            status: a.role ? "ready" : "proposed",
+            status: "proposed",
             mode: a.mode ?? "code",
             priority: a.priority,
             roleKey: a.role ?? null,
@@ -199,7 +199,7 @@ export async function applyActions(
             taskId: id,
             action: "created",
             title: a.title,
-            status: a.role ? "ready" : "proposed",
+            status: "proposed",
           });
           break;
         }
