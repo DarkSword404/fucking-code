@@ -341,6 +341,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
   let summary = "";
   let toolCalls = 0;
   let steps = 0;
+  let mutations = 0;
   let outcome: BuiltinAgentResult["outcome"] = "failed";
   let browserSession: BrowserSession | null = null;
 
@@ -357,8 +358,15 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         break;
       }
       steps += 1;
-      if (transcript.length > 160_000) {
-        transcript = `... earlier steps omitted ...\n${transcript.slice(-120_000)}`;
+      const transcriptCap = Number(process.env.BUILTIN_TRANSCRIPT_MAX ?? 100_000);
+      if (transcript.length > transcriptCap) {
+        const head = Math.min(30_000, Math.floor(transcriptCap / 3));
+        transcript = `${transcript.slice(0, head)}\n... earlier steps omitted ...\n${transcript.slice(
+          -(transcriptCap - head - 40),
+        )}`;
+      }
+      if (mutations === 0 && steps >= Math.max(4, Math.floor(maxSteps / 2))) {
+        transcript += `\n\nObservation: You have used ${steps}/${maxSteps} steps without editing. Stop reading and make the smallest necessary edit now.`;
       }
 
       // A single long generation (large patch, long file) can legitimately take
@@ -434,6 +442,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
             );
           }
           await writeWorkspaceFile(input.root, path, content);
+          mutations += 1;
           transcript += `\n\nAction: write ${path}\nObservation: file written (${String(action.content ?? "").length} chars)`;
         } else if (action.type === "edit") {
           const path = String(action.path ?? "");
@@ -459,6 +468,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
             path,
             original.slice(0, index) + newText + original.slice(index + oldText.length),
           );
+          mutations += 1;
           transcript += `\n\nAction: edit ${path}\nObservation: replaced ${oldText.length} chars with ${newText.length} chars`;
         } else if (action.type === "run") {
           const command = String(action.command ?? "").trim();
