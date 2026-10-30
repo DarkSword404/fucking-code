@@ -196,8 +196,9 @@ async function generateWithRetry(
     } catch (error) {
       lastError = error;
       if (request.signal?.aborted || !isRetryableModelError(error)) throw error;
-      const timeout = Number(request.timeoutMs ?? 300_000);
-      if (deadline !== undefined && deadline - Date.now() < timeout) throw error;
+      // A fast failure leaves most of the budget intact; only skip the retry
+      // when the task is nearly out of time.
+      if (deadline !== undefined && deadline - Date.now() < 10_000) throw error;
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_500));
     }
   }
@@ -281,6 +282,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
       // minutes. The per-call cap must not be shorter than the task budget, or
       // healthy work dies as a fake "channel timeout".
       const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
+      const callStarted = Date.now();
       const text = await generateWithRetry(
         gateway,
         {
@@ -292,6 +294,9 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         },
         deadline,
       );
+      console.log(
+        `[builtin] task=${input.taskTitle.slice(0, 12).replace(/\s+/g, "_")} step=${steps} prompt=${transcript.length} out=${text.length} ms=${Date.now() - callStarted}`,
+      );
       const parsed = parseAction(text);
       const action = parsed.action;
       if (!action || typeof action.type !== "string") {
@@ -300,6 +305,9 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
       }
 
       toolCalls += 1;
+      console.log(
+        `[builtin] action=${action.type} target=${String(action.path ?? action.command ?? action.url ?? "").slice(0, 160)}`,
+      );
       const label =
         action.type === "browser"
           ? `browser:${String(action.action ?? "snapshot")}`

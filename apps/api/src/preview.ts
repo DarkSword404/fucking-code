@@ -254,7 +254,35 @@ export function cleanupOrphanedPreviews(): number {
   return cleanupManagedContainers("preview");
 }
 
-export async function startPreview(projectId: string, repoPath: string): Promise<{ url: string; port: number }> {
+/**
+ * Concurrent preview starts (task startup, UI click, heartbeat) used to race
+ * past the `previews` check while the first start was still awaiting package
+ * inspection/dependencies, leaving two containers and two ports for one
+ * project. Share one promise per project instead.
+ */
+const previewStarts = new Map<string, Promise<{ url: string; port: number }>>();
+
+export async function startPreview(
+  projectId: string,
+  repoPath: string,
+): Promise<{ url: string; port: number }> {
+  const existing = previews.get(projectId);
+  if (existing && existing.alive()) {
+    return { url: existing.url, port: existing.port };
+  }
+  const inflight = previewStarts.get(projectId);
+  if (inflight) return inflight;
+  const job = startPreviewInternal(projectId, repoPath).finally(() => {
+    previewStarts.delete(projectId);
+  });
+  previewStarts.set(projectId, job);
+  return job;
+}
+
+async function startPreviewInternal(
+  projectId: string,
+  repoPath: string,
+): Promise<{ url: string; port: number }> {
   const existing = previews.get(projectId);
   if (existing && existing.alive()) {
     return { url: existing.url, port: existing.port };

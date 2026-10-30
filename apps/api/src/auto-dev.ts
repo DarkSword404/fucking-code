@@ -838,6 +838,66 @@ export async function recoverOrphanedTasks(): Promise<void> {
       ).catch(() => undefined);
     }
   }
+  // A graceful shutdown aborts in-flight runs, so their tasks can be written
+  // as failed/blocked moments before the process exits. Requeue those recent
+  // aborts instead of leaving the task parked and letting a later step jump the
+  // intended order. Only a narrow startup window is considered.
+  const startupCutoff = new Date(Date.now() - process.uptime() * 1000 - 5 * 60_000);
+  const abortedRows = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        inArray(tasks.status, ["failed", "blocked"]),
+        gt(tasks.updatedAt, startupCutoff),
+        sql`(${tasks.blockedReason} ILIKE '%aborted%' OR ${tasks.blockedReason} ILIKE '%运行已中断%' OR ${tasks.blockedReason} ILIKE '%服务重启%')`,
+      ),
+    );
+  if (abortedRows.length) {
+    const allTaskRows = await db.select({ id: tasks.id, evidence: tasks.evidence }).from(tasks);
+    const superseded = new Set<string>();
+    for (const row of allTaskRows) {
+      const defectOf = row.evidence?.["defectOf"];
+      if (typeof defectOf === "string") superseded.add(defectOf);
+    }
+    for (const task of abortedRows) {
+      if (superseded.has(task.id)) continue;
+      const [workspace] = await db
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(and(eq(workspaces.projectId, task.projectId), eq(workspaces.taskId, task.id)))
+        .limit(1);
+      if (workspace && workQueue.isRunning(workspace.id)) continue;
+      const [updated] = await db
+        .update(tasks)
+        .set({
+          status: "ready",
+          blockedReason: null,
+          evidence: {
+            ...task.evidence,
+            recoveredFromShutdownAt: new Date().toISOString(),
+          },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, task.id), inArray(tasks.status, ["failed", "blocked"])))
+        .returning();
+      if (!updated) continue;
+      const [owner] = await db
+        .select({ tenantId: projects.tenantId })
+        .from(projects)
+        .where(eq(projects.id, task.projectId))
+        .limit(1);
+      if (owner) {
+        await projectEmitter(owner.tenantId, task.projectId)(EVENT_TYPES.taskChanged, {
+          taskId: task.id,
+          action: "recovered",
+          status: "ready",
+          reason: "shutdown_abort",
+        }).catch(() => undefined);
+      }
+    }
+  }
+
   // A failed task that was superseded by a defect may still own the worktree
   // with the actual implementation. Move that workspace to the defect before
   // the scheduler starts it, instead of starting from a clean main checkout.
