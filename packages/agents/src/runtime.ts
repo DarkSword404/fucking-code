@@ -89,9 +89,11 @@ export class OpenCodeRuntime implements AgentRuntime {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const transient = /timeout|timed out|aborted|ECONNRESET|fetch failed|socket hang up|50[234]/i.test(
-        message,
-      );
+      // A timeout already used the whole per-turn budget; retrying it would
+      // just double the room's silence. Only retry fast transport failures.
+      const transient =
+        !/timeout|timed out|aborted/i.test(message) &&
+        /ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|50[234]/i.test(message);
       if (request.signal?.aborted || !transient) throw error;
       // One retry keeps a single jittery gateway call from turning into a
       // failed task or a silent room.

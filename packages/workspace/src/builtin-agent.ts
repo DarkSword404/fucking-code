@@ -171,9 +171,10 @@ export function isDependencyInstallCommand(command: string): boolean {
 
 function isTransientModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /timeout|timed out|aborted|ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(
-    message,
-  );
+  // Do not retry a timeout: it already consumed the full per-call budget, so a
+  // second attempt doubles the silence without making success more likely.
+  if (/timeout|timed out|aborted/i.test(message)) return false;
+  return /ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(message);
 }
 
 /** Retry one transient gateway failure before failing the whole task. */
