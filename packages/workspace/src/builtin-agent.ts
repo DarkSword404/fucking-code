@@ -1,4 +1,5 @@
 import { createModelGateway, type ModelGateway } from "@devteam/agents";
+import { jsonrepair } from "jsonrepair";
 import {
   detectTestCommand,
   listFiles,
@@ -48,15 +49,29 @@ function parseAction(text: string): ParsedAction {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
   const candidate = (fenced?.[1] ?? text).trim();
   const parse = (value: string): ParsedAction => {
-    try {
-      const parsed = JSON.parse(value) as Record<string, unknown>;
-      if (parsed.action && typeof parsed.action === "object") {
-        return parsed as ParsedAction;
+    const attempt = (raw: string): ParsedAction | null => {
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed.action && typeof parsed.action === "object") {
+          return parsed as ParsedAction;
+        }
+        return { action: parsed };
+      } catch {
+        return null;
       }
-      return { action: parsed };
+    };
+    const direct = attempt(value);
+    if (direct) return direct;
+    // Models routinely put raw newlines/quotes inside a large `content`
+    // string. Without repair a 70k write becomes an invalid action and the
+    // step is wasted; jsonrepair keeps the file content usable.
+    try {
+      const repaired = attempt(jsonrepair(value));
+      if (repaired) return repaired;
     } catch {
-      return {};
+      // fall through
     }
+    return {};
   };
   const direct = parse(candidate);
   if (direct.action) return direct;

@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "jsonrepair": "^3.15.0",
     "@devteam/agents": "*",
     "@devteam/contracts": "*",
     "@devteam/db": "*",

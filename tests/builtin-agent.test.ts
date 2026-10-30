@@ -144,6 +144,36 @@ describe("builtin edit action", () => {
   });
 });
 
+describe("builtin JSON repair", () => {
+  test("executes a write whose content contains raw newlines", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-raw-"));
+    roots.push(root);
+
+    const gateway = new ScriptedGateway([
+      `{"thought":"write","action":{"type":"write","path":"big.txt","content":"line1
+line2
+line3"}}`,
+      JSON.stringify({ action: { type: "done", summary: "wrote raw" } }),
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "raw write",
+      taskDescription: "write multiline content",
+      acceptance: ["big.txt exists"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 3,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(join(root, "big.txt"), "utf8")).toBe("line1\nline2\nline3");
+  });
+});
+
 describe("builtin model retry", () => {
   test("retries one transient timeout when the task budget allows it", async () => {
     const root = await mkdtemp(join(tmpdir(), "fc-builtin-retry-"));
