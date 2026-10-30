@@ -99,6 +99,12 @@ async function shutdown(signal: string): Promise<void> {
     console.error("[devteam] failed to stop previews", error);
   }
   try {
+    const { roomQueue, workQueue } = await import("./orchestration.js");
+    await Promise.all([roomQueue.drain(10_000), workQueue.drain(10_000)]);
+  } catch (error) {
+    console.error("[devteam] failed to drain queues", error);
+  }
+  try {
     await closeDb();
   } catch (error) {
     console.error("[devteam] failed to close database", error);

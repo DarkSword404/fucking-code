@@ -70,3 +70,32 @@ describe("keyed work queue", () => {
     expect(queue.isRunning("wedged")).toBe(false);
   });
 });
+
+describe("queue drain", () => {
+  test("aborts in-flight work and resolves after it settles", async () => {
+    const queue = new KeyedQueue();
+    let aborted = false;
+    queue.enqueue("room", async (signal) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      await wait(30);
+    });
+    await wait(1);
+    const started = Date.now();
+    await queue.drain(2_000);
+    expect(aborted).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await wait(40);
+  });
+
+  test("does not wait forever on work that ignores the abort", async () => {
+    const queue = new KeyedQueue();
+    queue.enqueue("wedged", () => new Promise<void>(() => {}));
+    await wait(1);
+    const started = Date.now();
+    await queue.drain(50);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(40);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});

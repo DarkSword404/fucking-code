@@ -74,6 +74,23 @@ export class KeyedQueue {
   }
 
   /**
+   * Abort in-flight work and wait for the chains to settle before the caller
+   * closes the database. A write racing `closeDb()` is how PGlite directories
+   * get corrupted on restart.
+   */
+  async drain(timeoutMs = 15_000): Promise<void> {
+    for (const controllers of this.controllers.values()) {
+      for (const controller of controllers) controller.abort();
+    }
+    const chains = [...this.chains.values()];
+    if (!chains.length) return;
+    await Promise.race([
+      Promise.allSettled(chains),
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs).unref()),
+    ]);
+  }
+
+  /**
    * Abort work that exceeded its budget. If the task ignores the abort (for
    * example a stuck database call), drop the chain after a grace period so the
    * key is not locked for the lifetime of the process.
