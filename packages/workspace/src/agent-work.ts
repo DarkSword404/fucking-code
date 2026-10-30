@@ -17,6 +17,9 @@ import {
   testRuns,
   workspaces,
 } from "@devteam/db";
+
+/** Last throttled progress notice per project/task. */
+const lastProgressNotice = new Map<string, number>();
 import { canonicalArtifactKey, initialArtifactStatus, uuidv7 } from "@devteam/domain";
 import {
   detectTestCommand,
@@ -747,6 +750,33 @@ async function runBuiltinTaskWork(input: {
     ),
     signal: input.signal,
     onProgress: async (tool) => {
+      // A long code/workbench run can be silent for many minutes in the room.
+      // Post a throttled progress note so "working" does not look like "dead".
+      const noticeKey = `${input.project.id}:${input.task.id}`;
+      const lastNotice = lastProgressNotice.get(noticeKey) ?? Date.now();
+      lastProgressNotice.set(noticeKey, lastNotice);
+      if (Date.now() - lastNotice >= 10 * 60_000) {
+        lastProgressNotice.set(noticeKey, Date.now());
+        const messageId = uuidv7();
+        await insertMessage({
+          id: messageId,
+          tenantId: input.project.tenantId,
+          projectId: input.project.id,
+          roomId: input.room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+          content: `任务《${input.task.title}》仍在执行，最近步骤：${tool}。`,
+          metadata: { kind: "task_progress", taskId: input.task.id, progress: tool },
+        });
+        await input.emit(EVENT_TYPES.messageCreated, {
+          messageId,
+          roomId: input.room.id,
+          senderType: "system",
+          senderName: "系统",
+          type: "system_event",
+        });
+      }
       await db
         .update(agentRuns)
         .set({
