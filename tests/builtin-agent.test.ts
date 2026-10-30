@@ -79,8 +79,12 @@ describe("dependency install guard", () => {
     expect(isDependencyInstallCommand("npm install --no-audit")).toBe(true);
     expect(isDependencyInstallCommand("pnpm i")).toBe(true);
     expect(isDependencyInstallCommand("yarn install --frozen-lockfile")).toBe(true);
+    expect(isDependencyInstallCommand("cd /workspace && npm ci --no-audit")).toBe(true);
+    expect(isDependencyInstallCommand("npm --prefix . ci")).toBe(true);
+    expect(isDependencyInstallCommand("yarn")).toBe(true);
     expect(isDependencyInstallCommand("npm test")).toBe(false);
     expect(isDependencyInstallCommand("node --test")).toBe(false);
     expect(isDependencyInstallCommand("npm run build")).toBe(false);
+    expect(isDependencyInstallCommand("npm run install-fixtures")).toBe(false);
   });
 });

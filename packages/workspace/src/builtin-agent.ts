@@ -149,8 +149,24 @@ function observationFor(result: { status: string; exitCode: number | null; outpu
  * burns the whole command timeout before failing. Refuse it immediately.
  */
 export function isDependencyInstallCommand(command: string): boolean {
-  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase();
-  return /^(npm|yarn|pnpm)(?: --?[^ ]+)* (?:ci|install|i)(?: |$)/.test(normalized);
+  const parts = command.split(/&&|\|\||;/);
+  for (const raw of parts) {
+    let part = raw.trim().toLowerCase();
+    // `cd /workspace && npm ci` is the common shape.
+    part = part.replace(/^cd\s+\S+\s*/, "").replace(/^sudo\s+/, "");
+    const tokens = part.split(/\s+/).filter(Boolean);
+    while (tokens.length && /^[a-z_][a-z0-9_]*=/.test(tokens[0]!)) tokens.shift();
+    const pm = tokens.shift();
+    if (!["npm", "yarn", "pnpm", "bun"].includes(pm ?? "")) continue;
+    if (!tokens.length && (pm === "yarn" || pm === "pnpm" || pm === "bun")) return true;
+    // Skip `--prefix <dir>`-style flag values before looking for the verb.
+    const verb = tokens.find(
+      (token, index) =>
+        !token.startsWith("-") && !["--prefix", "--cwd", "-c", "-C"].includes(tokens[index - 1] ?? ""),
+    );
+    if (verb === "ci" || verb === "install" || verb === "i" || verb === "add") return true;
+  }
+  return false;
 }
 
 function isTransientModelError(error: unknown): boolean {
