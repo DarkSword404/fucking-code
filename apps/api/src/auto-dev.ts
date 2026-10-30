@@ -26,6 +26,7 @@ import {
 import {
   canTransitionPhase,
   gateRequirementsForTransition,
+  inferTaskRoleKey,
   nextPhase,
   uuidv7,
 } from "@devteam/domain";
@@ -55,6 +56,8 @@ const AUTO_PAUSE_LABELS: Record<string, string> = {
   task_failed: "任务失败",
 };
 const phaseNudgeLocks = new Set<string>();
+/** Projects currently repairing orphaned `proposed` tasks. */
+const proposalRepairLocks = new Set<string>();
 const lastPhaseNudge = new Map<string, number>();
 const lastGateNotice = new Map<string, number>();
 const lastTriageNudge = new Map<string, number>();
@@ -81,6 +84,77 @@ export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   // a conservative default and the client can accept or override later. Only
   // explicit approvals and artifacts awaiting review are hard blockers.
   return pendingApprovals.length > 0 || pendingArtifacts.length > 0;
+}
+
+/**
+ * A task without a usable `roleKey` can never reach assignee confirmation, so
+ * it stays `proposed` forever and keeps `tasks_closed` false. Repair the owner
+ * (deterministically) and immediately run the normal internal confirmation, so
+ * an orphaned proposal becomes ready or needs_replan instead of deadlocking the
+ * scheduler. This is routing, not approval: the assigned role still decides.
+ */
+async function repairOrphanProposedTasks(
+  project: ProjectRow,
+  room: { id: string },
+  proposed: TaskRow[],
+): Promise<void> {
+  if (!proposed.length || proposalRepairLocks.has(project.id)) return;
+  proposalRepairLocks.add(project.id);
+  try {
+    const bundle = await loadRoomBundle(project.id, room.id, 0);
+    if (!bundle) return;
+    const enabledRoles = bundle.roles.filter((role) => role.enabled).map((role) => role.key);
+    if (!enabledRoles.length) return;
+
+    const db = getDb();
+    const taskIds: string[] = [];
+    for (const task of proposed) {
+      const current = task.roleKey;
+      if (current && enabledRoles.includes(current)) {
+        taskIds.push(task.id);
+        continue;
+      }
+      const roleKey = inferTaskRoleKey({
+        mode: task.mode,
+        title: task.title,
+        description: task.description,
+        availableRoles: enabledRoles,
+      });
+      await db
+        .update(tasks)
+        .set({
+          roleKey,
+          evidence: {
+            ...task.evidence,
+            assignment: {
+              ...(task.evidence?.["assignment"] as Record<string, unknown> | undefined),
+              autoRoleAssigned: {
+                roleKey,
+                at: new Date().toISOString(),
+                reason: current ? `角色 ${current} 不可用` : "任务没有承接角色",
+              },
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, "proposed")));
+      taskIds.push(task.id);
+    }
+    if (!taskIds.length) return;
+
+    const orchestrator = new Orchestrator({
+      runtime,
+      emit: projectEmitter(project.tenantId, project.id),
+    });
+    await orchestrator.reviewTaskAssignments(bundle, taskIds, `scheduler-${uuidv7()}`);
+  } catch (error) {
+    console.error(
+      "[auto-dev] orphan proposal repair failed",
+      error instanceof Error ? error.message : error,
+    );
+  } finally {
+    proposalRepairLocks.delete(project.id);
+  }
 }
 
 /**
@@ -1165,11 +1239,24 @@ export async function autoStartNext(projectId: string): Promise<void> {
       .where(eq(workspaces.projectId, projectId));
     if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
 
-    const taskRows = await db
+    let taskRows = await db
       .select()
       .from(tasks)
       .where(eq(tasks.projectId, projectId))
       .orderBy(asc(tasks.createdAt));
+
+    // Repair proposals before selecting work: an orphaned proposal must not
+    // look like "no work left" while silently holding the coding gate closed.
+    const proposed = taskRows.filter((task) => task.status === "proposed");
+    if (proposed.length) {
+      await repairOrphanProposedTasks(project, room, proposed);
+      taskRows = await db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.projectId, projectId))
+        .orderBy(asc(tasks.createdAt));
+    }
+
     let candidate: TaskRow | undefined;
     for (const task of taskRows) {
       if (task.status !== "ready") continue;
@@ -1184,7 +1271,7 @@ export async function autoStartNext(projectId: string): Promise<void> {
     if (!candidate) {
       const stuck = taskRows.filter(
         (task) =>
-          ["failed", "blocked", "needs_replan", "stale"].includes(task.status) ||
+          ["proposed", "failed", "blocked", "needs_replan", "stale"].includes(task.status) ||
           // A ready code task in testing/deployment/operations can never be
           // picked by the scheduler. Surface it for internal triage instead of
           // silently leaving a non-empty queue that looks stuck.

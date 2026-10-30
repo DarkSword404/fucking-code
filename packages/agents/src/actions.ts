@@ -230,6 +230,7 @@ export async function applyActions(
             .update(tasks)
             .set({
               status: a.status ?? task.status,
+              roleKey: a.roleKey ?? task.roleKey,
               blockedReason: a.blockedReason ?? (a.status === "blocked" ? task.blockedReason : null),
               evidence: a.evidence
                 ? { ...task.evidence, note: a.evidence, at: new Date().toISOString() }

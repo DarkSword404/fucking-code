@@ -205,7 +205,7 @@ export class Orchestrator {
    * before a task becomes runnable. This is an internal confirmation step and
    * never asks the client to approve execution details.
    */
-  private async reviewTaskAssignments(
+  async reviewTaskAssignments(
     bundle: RoomBundle,
     taskIds: string[],
     turnId: string,

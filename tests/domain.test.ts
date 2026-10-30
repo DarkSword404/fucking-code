@@ -4,6 +4,7 @@ import {
   canTransitionTask,
   gateRequirements,
   gateRequirementsForTransition,
+  inferTaskRoleKey,
   nextPhase,
   parseAgentOutput,
 } from "@devteam/domain";
@@ -200,5 +201,33 @@ describe("workflow gates", () => {
     expect(gateRequirementsForTransition("testing", "coding", empty)).toEqual([]);
     expect(gateRequirementsForTransition("deployment", "coding", empty)).toEqual([]);
     expect(gateRequirementsForTransition("operations", "requirements", empty)).toEqual([]);
+  });
+});
+
+describe("orphan task routing", () => {
+  test("infers a role from a task's mode and text", () => {
+    expect(inferTaskRoleKey({ mode: "code", title: "登录接口限速" })).toBe("security");
+    expect(inferTaskRoleKey({ mode: "code", title: "实现订单页面" })).toBe("frontend");
+    expect(inferTaskRoleKey({ mode: "code", title: "数据库迁移事务开关" })).toBe("backend");
+    expect(inferTaskRoleKey({ mode: "workbench", title: "部署健康检查与回滚" })).toBe("devops");
+    expect(inferTaskRoleKey({ mode: "workbench", title: "无关标题" })).toBe("devops");
+    expect(inferTaskRoleKey({ mode: "code", title: "无关标题" })).toBe("backend");
+  });
+
+  test("respects the enabled role set and never falls back to a disabled role", () => {
+    expect(
+      inferTaskRoleKey({
+        mode: "code",
+        title: "实现订单页面",
+        availableRoles: ["backend", "architect"],
+      }),
+    ).toBe("backend");
+    expect(
+      inferTaskRoleKey({
+        mode: "code",
+        title: "实现订单页面",
+        availableRoles: ["architect"],
+      }),
+    ).toBe("architect");
   });
 });

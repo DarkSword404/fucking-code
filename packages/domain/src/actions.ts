@@ -45,6 +45,8 @@ const updateTask = z.object({
     .optional(),
   evidence: z.string().max(4000).optional(),
   blockedReason: z.string().max(2000).optional(),
+  /** Reassign an orphaned proposal to a role; that role still confirms it. */
+  roleKey: roleKey.optional(),
 });
 
 const createArtifact = z.object({
