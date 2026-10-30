@@ -46,6 +46,30 @@ interface ParsedAction {
   action?: Record<string, unknown>;
 }
 
+function firstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  return null;
+}
+
 function parseAction(text: string): ParsedAction {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
   const candidate = (fenced?.[1] ?? text).trim();
@@ -76,9 +100,11 @@ function parseAction(text: string): ParsedAction {
   };
   const direct = parse(candidate);
   if (direct.action) return direct;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start >= 0 && end > start) return parse(candidate.slice(start, end + 1));
+  // Models sometimes append an observation or `<system>` block after the
+  // action. Slicing first-to-last brace then includes that trailing text and
+  // breaks JSON. Extract the first balanced object instead.
+  const first = firstJsonObject(candidate);
+  if (first) return parse(first);
   return {};
 }
 

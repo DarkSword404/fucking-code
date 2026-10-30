@@ -174,6 +174,33 @@ line3"}}`,
   });
 });
 
+describe("builtin JSON extraction", () => {
+  test("ignores text appended after the action object", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-tail-"));
+    roots.push(root);
+    await writeFile(join(root, "note.txt"), "ok\n");
+
+    const gateway = new ScriptedGateway([
+      `{"thought":"done","action":{"type":"done","summary":"tail ignored"}} <system>Action: read; Observation: { nested } </system>`,
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "tail",
+      taskDescription: "ignore trailing text",
+      acceptance: ["done"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 2,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(result.summary).toContain("tail ignored");
+  });
+});
+
 describe("builtin model retry", () => {
   test("retries one transient timeout when the task budget allows it", async () => {
     const root = await mkdtemp(join(tmpdir(), "fc-builtin-retry-"));
