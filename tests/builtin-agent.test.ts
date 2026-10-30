@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test } from "vitest";
-import { runBuiltinAgent } from "@devteam/workspace";
+import { isDependencyInstallCommand, runBuiltinAgent } from "@devteam/workspace";
 import type { ModelGateway } from "@devteam/agents";
 
 class ScriptedGateway implements ModelGateway {
@@ -70,5 +70,17 @@ describe("builtin code agent", () => {
     expect(result.toolCalls).toBe(3);
     expect(result.summary).toContain("fixed add");
     expect(() => execFileSync("npm", ["test"], { cwd: root, stdio: "ignore" })).not.toThrow();
+  });
+});
+
+describe("dependency install guard", () => {
+  test("refuses installers inside the shared worktree", () => {
+    expect(isDependencyInstallCommand("npm ci")).toBe(true);
+    expect(isDependencyInstallCommand("npm install --no-audit")).toBe(true);
+    expect(isDependencyInstallCommand("pnpm i")).toBe(true);
+    expect(isDependencyInstallCommand("yarn install --frozen-lockfile")).toBe(true);
+    expect(isDependencyInstallCommand("npm test")).toBe(false);
+    expect(isDependencyInstallCommand("node --test")).toBe(false);
+    expect(isDependencyInstallCommand("npm run build")).toBe(false);
   });
 });

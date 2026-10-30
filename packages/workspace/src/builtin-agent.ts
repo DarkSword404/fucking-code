@@ -143,6 +143,16 @@ function observationFor(result: { status: string; exitCode: number | null; outpu
  * browser are executed by Fucking Code itself, so no OpenCode session/tool
  * runtime is required.
  */
+/**
+ * Worktrees share the base repository's dependency directory (read-only).
+ * Running an installer inside the sandbox cannot work, and with network off it
+ * burns the whole command timeout before failing. Refuse it immediately.
+ */
+export function isDependencyInstallCommand(command: string): boolean {
+  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase();
+  return /^(npm|yarn|pnpm)(?: --?[^ ]+)* (?:ci|install|i)(?: |$)/.test(normalized);
+}
+
 function isTransientModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /timeout|timed out|aborted|ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(
@@ -289,8 +299,12 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         } else if (action.type === "run") {
           const command = String(action.command ?? "").trim();
           if (!command) throw new Error("empty command");
-          const result = await runCommand(input.root, command, 180_000, { network });
-          transcript += `\n\nAction: run ${command}\nObservation: ${observationFor(result)}`;
+          if (isDependencyInstallCommand(command)) {
+            transcript += `\n\nAction: run ${command}\nObservation: 依赖目录由主仓库只读共享，安装命令已拒绝；直接运行测试，缺依赖请报告缺口。`;
+          } else {
+            const result = await runCommand(input.root, command, 180_000, { network });
+            transcript += `\n\nAction: run ${command}\nObservation: ${observationFor(result)}`;
+          }
         } else if (action.type === "fetch") {
           if (!isWorkbench) throw new Error("fetch is only available in workbench mode");
           const rawUrl = String(action.url ?? "").trim();
