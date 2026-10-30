@@ -692,7 +692,12 @@ export async function pauseAutoDevelopment(
   autoPauseReasons.set(projectId, reason);
   await db
     .update(projects)
-    .set({ autoStartTasks: false, updatedAt: new Date(), version: project.version + 1 })
+    .set({
+      autoStartTasks: false,
+      autoPauseReason: reason,
+      updatedAt: new Date(),
+      version: project.version + 1,
+    })
     .where(eq(projects.id, projectId));
   const emit = projectEmitter(project.tenantId, project.id);
   await emit(EVENT_TYPES.projectChanged, {
@@ -878,6 +883,13 @@ export async function recoverOrphanedTasks(): Promise<void> {
 /** Clear a scheduler pause reason after a manual toggle. */
 export function clearAutoPauseReason(projectId: string): void {
   autoPauseReasons.delete(projectId);
+  void getDb()
+    .update(projects)
+    .set({ autoPauseReason: null })
+    .where(eq(projects.id, projectId))
+    .catch((error) => {
+      console.error("[auto-dev] could not clear pause reason", error);
+    });
 }
 
 export async function enableAutoDevelopment(projectId: string): Promise<void> {
@@ -889,7 +901,12 @@ export async function enableAutoDevelopment(projectId: string): Promise<void> {
   if (!project) throw new Error("project not found");
   await db
     .update(projects)
-    .set({ autoStartTasks: true, updatedAt: new Date(), version: project.version + 1 })
+    .set({
+      autoStartTasks: true,
+      autoPauseReason: null,
+      updatedAt: new Date(),
+      version: project.version + 1,
+    })
     .where(eq(projects.id, projectId));
   await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
     action: "auto_resumed",
@@ -1545,7 +1562,9 @@ export async function autoStartNext(projectId: string): Promise<void> {
     await mergeInternallyReviewedTasks(projectId);
 
     if (!project.autoStartTasks) {
-      const pauseReason = autoPauseReasons.get(projectId);
+      // The reason is persisted so a restart does not turn a system pause into
+      // a permanent "user disabled" state.
+      const pauseReason = autoPauseReasons.get(projectId) ?? project.autoPauseReason ?? undefined;
       // No recorded system reason means the user turned auto development off.
       if (!pauseReason) return;
       if (await hasPendingDecisions(projectId)) return;
@@ -1553,7 +1572,12 @@ export async function autoStartNext(projectId: string): Promise<void> {
       // the user click "继续自动开发" again.
       const [resumed] = await db
         .update(projects)
-        .set({ autoStartTasks: true, updatedAt: new Date(), version: project.version + 1 })
+        .set({
+          autoStartTasks: true,
+          autoPauseReason: null,
+          updatedAt: new Date(),
+          version: project.version + 1,
+        })
         .where(eq(projects.id, projectId))
         .returning();
       if (!resumed) return;

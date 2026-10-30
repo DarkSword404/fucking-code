@@ -107,6 +107,12 @@ export const projects = pgTable(
     budgetCents: integer("budget_cents").notNull().default(0),
     spentCents: integer("spent_cents").notNull().default(0),
     autoStartTasks: boolean("auto_start_tasks").notNull().default(true),
+    /**
+     * Non-null means the system paused auto development (pending decision,
+     * approval, failed task). NULL means the user turned it off. Persisted so
+     * a restart does not mistake a system pause for a user pause.
+     */
+    autoPauseReason: text("auto_pause_reason"),
     version: integer("version").notNull().default(1),
     createdAt,
     updatedAt,
