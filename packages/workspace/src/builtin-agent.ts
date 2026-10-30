@@ -1,4 +1,5 @@
 import { createModelGateway, type ModelGateway } from "@devteam/agents";
+import { writeFile } from "node:fs/promises";
 import { jsonrepair } from "jsonrepair";
 import {
   detectTestCommand,
@@ -104,9 +105,10 @@ function codeSystemPrompt(testCommand: string | null): string {
     '{"thought":"...","action":{"type":"done","summary":"what changed, test result, remaining risk"}}',
     "",
     "Rules:",
+    "- Output exactly one JSON object. No markdown fences, no explanation, no plan, no multiple actions.",
     "- Work only inside the worktree; use relative paths.",
     "- Inspect before editing; make small complete changes.",
-    "- Prefer `edit` with an exact old snippet for changes. Use `write` only for new files or a genuine full rewrite; do not rewrite a large file just to change a few lines.",
+    "- For an existing file you MUST use `edit` with an exact old snippet. `write` is only for new files; never rewrite an existing large file.",
     "- Run the test command after changes. Do not claim success without the command output.",
     "- Do not run git push, git merge/rebase to main, rm -rf, or read .env.",
     "- If the task is already satisfied, run tests once and done.",
@@ -140,6 +142,7 @@ function workbenchSystemPrompt(): string {
     '{"thought":"...","action":{"type":"done","summary":"per-item result, uncovered items, reproduction steps, residual risk"}}',
     "",
     "Rules:",
+    "- Output exactly one JSON object. No markdown fences, no explanation, no multiple actions.",
     "- This is a read-only verification. Do not modify product code. Evidence and reports may only be written under docs/ or qa-evidence/.",
     "- Use the provided preview URL first. Do not start a second app instance unless the preview is broken; if you must, use a random PORT and stop it afterwards.",
     "- Every conclusion needs evidence: command output, HTTP status/body, browser snapshot, or screenshot path. Never guess a pass.",
@@ -315,7 +318,12 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
       const parsed = parseAction(text);
       const action = parsed.action;
       if (!action || typeof action.type !== "string") {
-        transcript += `\n\nAssistant: ${clip(text, 2000)}\nObservation: invalid action JSON. Reply with one action object only.`;
+        const dump = `/tmp/fc-invalid-action-${process.pid}-${steps}.txt`;
+        await writeFile(dump, text).catch(() => undefined);
+        console.error(
+          `[builtin] invalid action step=${steps} len=${text.length} dump=${dump} head=${text.slice(0, 160).replace(/\s+/g, " ")} tail=${text.slice(-160).replace(/\s+/g, " ")}`,
+        );
+        transcript += `\n\nAssistant: ${clip(text, 2000)}\nObservation: invalid action JSON. Reply with exactly one action object, no markdown or explanation.`;
         continue;
       }
 
@@ -347,7 +355,16 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
               throw new Error("workbench may only write evidence under docs/ or qa-evidence/");
             }
           }
-          await writeWorkspaceFile(input.root, path, String(action.content ?? ""));
+          const content = String(action.content ?? "");
+          // A full rewrite of an existing file is the main cause of 10-minute
+          // generations and unusable truncated JSON. Force targeted edits.
+          const existing = await readWorkspaceFile(input.root, path).catch(() => null);
+          if (existing !== null && existing.length > 1_000 && content.length > 4_000) {
+            throw new Error(
+              "write refused: this file already exists and is non-trivial; use edit with an exact snippet instead of rewriting it",
+            );
+          }
+          await writeWorkspaceFile(input.root, path, content);
           transcript += `\n\nAction: write ${path}\nObservation: file written (${String(action.content ?? "").length} chars)`;
         } else if (action.type === "edit") {
           const path = String(action.path ?? "");
