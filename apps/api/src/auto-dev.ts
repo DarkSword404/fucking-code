@@ -307,7 +307,9 @@ async function repairOrphanProposedTasks(
  */
 async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<void> {
   const last = lastTriageNudge.get(projectId) ?? 0;
-  if (Date.now() - last < 15 * 60_000) return;
+  // An unrunnable ready task parks the whole phase. Five minutes is enough to
+  // avoid flooding the room while still surfacing the deadlock quickly.
+  if (Date.now() - last < 5 * 60_000) return;
   const triageToken = claimLock(triageLocks, projectId, 20 * 60_000);
   if (!triageToken) return;
   try {

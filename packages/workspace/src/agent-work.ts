@@ -325,7 +325,10 @@ async function finalizeWork(input: {
   } = input;
   const mode = input.mode ?? "code";
     const isWorkbench = task.mode === "workbench";
-    const testsPassed = !testResult || testResult.status === "passed";
+    // A workbench is evidence collection, not a green-test gate. Its job is to
+    // report the real state (including failing tests), so a failing project
+    // test must not turn a completed workbench into a defect loop.
+    const testsPassed = isWorkbench || !testResult || testResult.status === "passed";
     const specPassed = isWorkbench ? true : verification ? verification.verdict === "pass" : true;
     const success = (outcome === "succeeded" || outcome === "verified") && testsPassed && specPassed;
 
@@ -580,12 +583,14 @@ async function finalizeWork(input: {
             "请定位根因、修复并补充回归测试。",
           ].join("\n"),
           status: "ready",
+          mode: task.mode,
           priority: task.priority,
           roleKey: task.roleKey,
           requirementVersion: task.requirementVersion,
           spec: task.spec as Record<string, unknown>,
-          acceptance:
-            testResult && testResult.status !== "passed"
+          acceptance: isWorkbench
+            ? ["补齐缺失的只读证据与未覆盖口径", "不要修改业务代码", "回贴原始命令、输出与剩余风险"]
+            : testResult && testResult.status !== "passed"
               ? ["修复失败用例并补充回归测试", "npm test 全部通过"]
               : ["补齐规格核对缺失项", "补充覆盖缺失项的测试", "npm test 全部通过"],
           evidence: { defectOf: task.id, sourceTaskTitle: task.title },

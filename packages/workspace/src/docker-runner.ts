@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { CommandResult } from "./manager.js";
 
@@ -56,6 +56,30 @@ export function cleanupManagedContainers(kind: "runner" | "preview"): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Worktrees share node_modules/.venv through an absolute symlink to the base
+ * repository. Inside a container only the worktree is mounted, so that link
+ * dangles and every test fails with ERR_MODULE_NOT_FOUND. Mount the real
+ * targets read-only at the same absolute paths so the links resolve.
+ */
+function dependencyVolumeArgs(root: string): string[] {
+  const args: string[] = [];
+  for (const name of ["node_modules", ".venv"]) {
+    const link = join(root, name);
+    try {
+      if (!lstatSync(link).isSymbolicLink()) continue;
+      const target = realpathSync(link);
+      if (!existsSync(target)) continue;
+      // Already inside the rw workspace mount.
+      if (target === root || target.startsWith(`${root}${sep}`)) continue;
+      args.push("-v", `${target}:${target}:ro`);
+    } catch {
+      // no dependency link
+    }
+  }
+  return args;
 }
 
 export interface DockerRunInput {
@@ -130,6 +154,7 @@ export async function dockerRunCommand(input: DockerRunInput): Promise<CommandRe
     args.push("--volumes-from", volumesFrom, "-w", workdir);
   } else {
     args.push("-v", `${input.root}:/workspace:rw`, "-w", "/workspace");
+    args.push(...dependencyVolumeArgs(input.root));
   }
   args.push(image, input.bin, ...input.args);
 
