@@ -143,6 +143,31 @@ function observationFor(result: { status: string; exitCode: number | null; outpu
  * browser are executed by Fucking Code itself, so no OpenCode session/tool
  * runtime is required.
  */
+function isTransientModelError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|timed out|aborted|ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(
+    message,
+  );
+}
+
+/** Retry one transient gateway failure before failing the whole task. */
+async function generateWithRetry(
+  gateway: Pick<ModelGateway, "generateText">,
+  request: Parameters<ModelGateway["generateText"]>[0],
+): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await gateway.generateText(request);
+    } catch (error) {
+      lastError = error;
+      if (request.signal?.aborted || !isTransientModelError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("model gateway failed");
+}
+
 export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<BuiltinAgentResult> {
   const gateway = input.gateway ?? createModelGateway();
   const mode: BuiltinAgentMode = input.mode ?? "code";
@@ -216,12 +241,16 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         transcript = `... earlier steps omitted ...\n${transcript.slice(-120_000)}`;
       }
 
-      const text = await gateway.generateText({
+      // A single long generation (large patch, long file) can legitimately take
+      // minutes. The per-call cap must not be shorter than the task budget, or
+      // healthy work dies as a fake "channel timeout".
+      const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
+      const text = await generateWithRetry(gateway, {
         system,
         prompt: transcript,
         model: input.model,
         signal: input.signal,
-        timeoutMs: Math.min(90_000, Math.max(10_000, deadline - Date.now())),
+        timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
       });
       const parsed = parseAction(text);
       const action = parsed.action;

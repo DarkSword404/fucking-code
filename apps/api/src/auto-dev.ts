@@ -258,6 +258,40 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
  * request_phase; it cannot create tasks, artifacts, approvals or change task
  * state. Client confirmation is not part of engineering phase transitions.
  */
+/** Which role owns the evidence that is still missing from a phase gate. */
+function gateOwnerRole(unmetKeys: string[], phase: WorkflowPhase): string {
+  const owners: Record<string, string> = {
+    prd_accepted: "pm",
+    acceptance_criteria: "pm",
+    security_requirements: "security",
+    design_accepted: "architect",
+    plan_accepted: "architect",
+    has_tasks: "architect",
+    security_design: "security",
+    tasks_closed: "lead",
+    sca: "security",
+    sast: "security",
+    code_audit: "security",
+    test_report: "qa",
+    spec_review: "qa",
+    security_test: "security",
+    release_security: "security",
+  };
+  const phaseOwner: Record<WorkflowPhase, string> = {
+    requirements: "pm",
+    design: "architect",
+    coding: "lead",
+    testing: "qa",
+    deployment: "devops",
+    operations: "devops",
+  };
+  for (const key of unmetKeys) {
+    const owner = owners[key];
+    if (owner) return owner;
+  }
+  return phaseOwner[phase] ?? "lead";
+}
+
 export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
   if (phaseNudgeLocks.has(projectId)) return;
   const last = lastPhaseNudge.get(projectId) ?? 0;
@@ -297,7 +331,15 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       if (Date.now() - lastNotice >= 10 * 60_000) {
         lastGateNotice.set(projectId, Date.now());
         const unmet = requirements.filter((r) => !r.met);
+        const owner = gateOwnerRole(unmet.map((r) => r.key), from);
+        const ownerName = bundle.roles.find((role) => role.key === owner)?.displayName ?? owner;
         const messageId = uuidv7();
+        const content = [
+          `自动开发当前没有可执行任务；${PHASE_LABELS[from]}门禁尚未满足。`,
+          `还差：${unmet.map((r) => r.label).join("、")}。`,
+          `这个小回合交给 ${ownerName}：请补齐缺失证据，或用 create_task 创建缺失的 workbench 任务（先检查现有任务，避免重复）。`,
+          "工程事项不要问甲方；补齐后 Lead 会自动发起阶段推进。",
+        ].join("\n");
         await insertMessage({
           id: messageId,
           tenantId: project.tenantId,
@@ -306,20 +348,52 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
           senderType: "system",
           senderName: "系统",
           type: "system_event",
-          content: [
-            `自动开发当前没有可执行任务；${PHASE_LABELS[from]}门禁尚未满足。`,
-            `还差：${unmet.map((r) => r.label).join("、")}。`,
-            "这不是对话中断：补齐上述证据/任务后，Lead 会自动发起阶段推进。",
-          ].join("\n"),
-          metadata: { kind: "gate_waiting", phase: from, unmet: unmet.map((r) => r.key), trigger },
+          content,
+          metadata: { kind: "gate_waiting", phase: from, unmet: unmet.map((r) => r.key), trigger, owner },
         });
-        await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+        const emit = projectEmitter(project.tenantId, project.id);
+        await emit(EVENT_TYPES.messageCreated, {
           messageId,
           roomId: room.id,
           senderType: "system",
           senderName: "系统",
           type: "system_event",
         });
+
+        // A gate that needs evidence must not idle forever: hand one bounded
+        // internal turn to the role that owns the missing evidence. Otherwise
+        // the notice is just a tombstone and the room goes silent again.
+        if (!roomQueue.isRunning(room.id)) {
+          const orchestrator = new Orchestrator({
+            runtime,
+            emit,
+            maxRounds: 1,
+            maxSpeakersPerRound: 1,
+            maxMessagesPerTurn: 1,
+          });
+          roomQueue.enqueue(room.id, async (signal) => {
+            try {
+              await orchestrator.run({
+                projectId: project.id,
+                roomId: room.id,
+                userMessageId: messageId,
+                content,
+                mentions: [owner],
+                participantKeys: [owner],
+                userName: "系统",
+                triggerLabel: "系统（阶段门禁未满足）",
+                phaseOnly: false,
+                userId: project.tenantId,
+                signal,
+              });
+            } catch (error) {
+              console.error(
+                "[auto-dev] gate owner turn failed",
+                error instanceof Error ? error.message : error,
+              );
+            }
+          });
+        }
       }
       return;
     }

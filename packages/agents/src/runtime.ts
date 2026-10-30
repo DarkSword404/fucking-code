@@ -72,16 +72,38 @@ export class OpenCodeRuntime implements AgentRuntime {
             (this.gateway.name === "opencode" ? "gemini-4-argon" : baseModel.id),
         }
       : baseModel;
-    const timeoutMs = request.roleKey === "architect" ? 180_000 : 90_000;
+    const configuredTimeout = Number(process.env.AGENT_TURN_TIMEOUT_MS ?? 0);
+    const baseTimeout = configuredTimeout > 0 ? configuredTimeout : 180_000;
+    const timeoutMs =
+      request.roleKey === "architect" ? Math.max(baseTimeout, 300_000) : baseTimeout;
 
-    const text = await this.gateway.generateText({
-      system: request.system,
-      prompt: request.prompt,
-      model,
-      files: request.files,
-      signal: request.signal,
-      timeoutMs,
-    });
+    let text: string;
+    try {
+      text = await this.gateway.generateText({
+        system: request.system,
+        prompt: request.prompt,
+        model,
+        files: request.files,
+        signal: request.signal,
+        timeoutMs,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const transient = /timeout|timed out|aborted|ECONNRESET|fetch failed|socket hang up|50[234]/i.test(
+        message,
+      );
+      if (request.signal?.aborted || !transient) throw error;
+      // One retry keeps a single jittery gateway call from turning into a
+      // failed task or a silent room.
+      text = await this.gateway.generateText({
+        system: request.system,
+        prompt: request.prompt,
+        model,
+        files: request.files,
+        signal: request.signal,
+        timeoutMs,
+      });
+    }
 
     const parsed = parseAgentOutput(text);
     return {
