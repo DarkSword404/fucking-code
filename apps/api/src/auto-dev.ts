@@ -456,10 +456,6 @@ function resolveEnabledOwner(
 }
 
 export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
-  const last = lastPhaseNudge.get(projectId) ?? 0;
-  // If the Lead declines, do not re-ask on every scheduler tick. Ten minutes
-  // is enough for new evidence to arrive without flooding the room.
-  if (Date.now() - last < 10 * 60_000) return;
   const phaseToken = claimLock(phaseNudgeLocks, projectId, 25 * 60_000);
   if (!phaseToken) return;
   try {
@@ -468,6 +464,13 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     if (!project || project.status === "archived") return;
     const from = project.phase as WorkflowPhase;
     const next = nextPhase(from);
+    // Cooldown is per phase, not per project: after a transition the next
+    // phase must be evaluated immediately instead of waiting out the previous
+    // phase's ten-minute window.
+    const phaseKey = `${projectId}:${from}`;
+    const last = lastPhaseNudge.get(phaseKey) ?? 0;
+    // If the Lead declines, do not re-ask on every scheduler tick.
+    if (Date.now() - last < 10 * 60_000) return;
     if (!next || !canTransitionPhase(from, next)) return;
     // Legacy in_review artifacts are internal material; clear them before the
     // pending-decision check so they cannot block the gate forever.
@@ -512,9 +515,9 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       // Idle is not an error: the scheduler has no ready work because a gate is
       // waiting for evidence (for example Security's SCA/SAST reports). Say so
       // explicitly instead of looking like the conversation silently stopped.
-      const lastNotice = lastGateNotice.get(projectId) ?? 0;
+      const lastNotice = lastGateNotice.get(phaseKey) ?? 0;
       if (Date.now() - lastNotice >= 10 * 60_000) {
-        lastGateNotice.set(projectId, Date.now());
+        lastGateNotice.set(phaseKey, Date.now());
         const unmet = requirements.filter((r) => !r.met);
         const preferred = gateOwnerRole(unmet.map((r) => r.key), from);
         const owner = resolveEnabledOwner(bundle.roles, preferred, from);
@@ -584,8 +587,8 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       return;
     }
 
-    lastGateNotice.delete(projectId);
-    lastPhaseNudge.set(projectId, Date.now());
+    lastGateNotice.delete(phaseKey);
+    lastPhaseNudge.set(phaseKey, Date.now());
     const messageId = uuidv7();
     const content = [
       "阶段门禁已经满足。",
