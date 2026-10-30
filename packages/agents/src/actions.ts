@@ -64,6 +64,66 @@ function orderedActions(actions: ValidatedAgentAction[]): ValidatedAgentAction[]
   return actions;
 }
 
+function normalizeTaskTitle(value: string): string {
+  return value
+    // Models often append the mention to the title: "... @backend".
+    .replace(/@[a-z][a-z0-9_-]*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Resolve a task reference from an action. Exact id wins; exact title is next;
+ * then a normalized title (mentions/whitespace stripped). This keeps a model's
+ * harmless " @backend" suffix from turning a real cancellation into a no-op.
+ */
+async function resolveTaskRef(
+  projectId: string,
+  ref: { taskId?: string; taskTitle?: string },
+): Promise<{ task?: typeof tasks.$inferSelect; ambiguous?: boolean }> {
+  const db = getDb();
+  if (ref.taskId) {
+    const [row] = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.projectId, projectId), eq(tasks.id, ref.taskId)))
+      .limit(1);
+    return { task: row };
+  }
+  const raw = (ref.taskTitle ?? "").trim();
+  if (!raw) return {};
+  const rows = await db.select().from(tasks).where(eq(tasks.projectId, projectId));
+  const exact = rows.filter((row) => row.title === raw);
+  if (exact.length === 1) return { task: exact[0] };
+  const target = normalizeTaskTitle(raw);
+  if (!target) return {};
+  const normalized = rows.filter((row) => normalizeTaskTitle(row.title) === target);
+  if (normalized.length === 1) return { task: normalized[0] };
+  if (normalized.length > 1) {
+    // Prefer an open task; a closed one with the same title is historical.
+    const open = normalized.filter((row) => !["done", "cancelled"].includes(row.status));
+    if (open.length === 1) return { task: open[0] };
+    return { ambiguous: true };
+  }
+  // Tolerate a truncated title (agents sometimes cut long titles).
+  const partial = rows.filter((row) => {
+    const candidate = normalizeTaskTitle(row.title);
+    return (
+      candidate.length >= 8 &&
+      target.length >= 8 &&
+      (candidate.startsWith(target) || target.startsWith(candidate))
+    );
+  });
+  if (partial.length === 1) return { task: partial[0] };
+  if (partial.length > 1) {
+    const open = partial.filter((row) => !["done", "cancelled"].includes(row.status));
+    if (open.length === 1) return { task: open[0] };
+    return { ambiguous: true };
+  }
+  return {};
+}
+
 export async function applyActions(
   actions: ValidatedAgentAction[],
   ctx: ApplyContext,
@@ -210,19 +270,17 @@ export async function applyActions(
             result.notes.push("update_task requires taskId or taskTitle");
             break;
           }
-          const rows = await db
-            .select()
-            .from(tasks)
-            .where(
-              and(
-                eq(tasks.projectId, ctx.bundle.project.id),
-                a.taskId ? eq(tasks.id, a.taskId) : eq(tasks.title, a.taskTitle!),
-              ),
-            )
-            .limit(1);
-          const task = rows[0];
+          const resolved = await resolveTaskRef(ctx.bundle.project.id, {
+            taskId: a.taskId,
+            taskTitle: a.taskTitle,
+          });
+          const task = resolved.task;
           if (!task) {
-            result.notes.push(`task not found: ${a.taskId ?? a.taskTitle}`);
+            result.notes.push(
+              resolved.ambiguous
+                ? `task title is ambiguous, pass taskId: ${a.taskTitle}`
+                : `task not found: ${a.taskId ?? a.taskTitle}`,
+            );
             break;
           }
           if (a.status) assertTaskTransition(task.status as TaskStatus, a.status as TaskStatus);

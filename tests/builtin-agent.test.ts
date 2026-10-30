@@ -73,6 +73,112 @@ describe("builtin code agent", () => {
   });
 });
 
+describe("builtin edit action", () => {
+  test("replaces one exact snippet without rewriting the file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-edit-"));
+    roots.push(root);
+    const before = `${"line before\n".repeat(50)}const answer = 1;\n${"line after\n".repeat(50)}`;
+    await writeFile(join(root, "app.js"), before);
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-qm", "init"],
+      { cwd: root },
+    );
+
+    const gateway = new ScriptedGateway([
+      JSON.stringify({
+        thought: "targeted change",
+        action: { type: "edit", path: "app.js", old: "const answer = 1;", new: "const answer = 42;" },
+      }),
+      JSON.stringify({ thought: "done", action: { type: "done", summary: "edited answer" } }),
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "edit answer",
+      taskDescription: "answer should be 42",
+      acceptance: ["answer is 42"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 3,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    const { readFile } = await import("node:fs/promises");
+    const after = await readFile(join(root, "app.js"), "utf8");
+    expect(after).toContain("const answer = 42;");
+    expect(after.split("\n").length).toBe(before.split("\n").length);
+  });
+
+  test("rejects an ambiguous edit target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-edit-"));
+    roots.push(root);
+    await writeFile(join(root, "dup.txt"), "same\nsame\n");
+
+    const gateway = new ScriptedGateway([
+      JSON.stringify({
+        action: { type: "edit", path: "dup.txt", old: "same", new: "different" },
+      }),
+      JSON.stringify({ action: { type: "done", summary: "gave up" } }),
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "ambiguous edit",
+      taskDescription: "must not guess",
+      acceptance: ["no blind edit"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 3,
+      timeoutMs: 30_000,
+    });
+
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(join(root, "dup.txt"), "utf8")).toBe("same\nsame\n");
+    expect(result.toolCalls).toBeGreaterThan(0);
+  });
+});
+
+describe("builtin model retry", () => {
+  test("retries one transient timeout when the task budget allows it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-retry-"));
+    roots.push(root);
+    await writeFile(join(root, "note.txt"), "ok\n");
+
+    class FlakyGateway implements ModelGateway {
+      readonly name = "flaky";
+      calls = 0;
+      async generateText(): Promise<string> {
+        this.calls += 1;
+        if (this.calls === 1) throw new Error("The operation was aborted due to timeout");
+        return JSON.stringify({ action: { type: "done", summary: "recovered" } });
+      }
+    }
+    const gateway = new FlakyGateway();
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "retry",
+      taskDescription: "survive one timeout",
+      acceptance: ["done"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 2,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(gateway.calls).toBe(2);
+    expect(result.summary).toContain("recovered");
+  });
+});
+
 describe("dependency install guard", () => {
   test("refuses installers inside the shared worktree", () => {
     expect(isDependencyInstallCommand("npm ci")).toBe(true);

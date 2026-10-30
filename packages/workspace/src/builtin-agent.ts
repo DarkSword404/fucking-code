@@ -84,12 +84,14 @@ function codeSystemPrompt(testCommand: string | null): string {
     '{"thought":"...","action":{"type":"list"}}',
     '{"thought":"...","action":{"type":"read","path":"relative/path"}}',
     '{"thought":"...","action":{"type":"write","path":"relative/path","content":"full file content"}}',
+    '{"thought":"...","action":{"type":"edit","path":"relative/path","old":"exact existing snippet","new":"replacement"}}',
     '{"thought":"...","action":{"type":"run","command":"npm test"}}',
     '{"thought":"...","action":{"type":"done","summary":"what changed, test result, remaining risk"}}',
     "",
     "Rules:",
     "- Work only inside the worktree; use relative paths.",
     "- Inspect before editing; make small complete changes.",
+    "- Prefer `edit` with an exact old snippet for changes. Use `write` only for new files or a genuine full rewrite; do not rewrite a large file just to change a few lines.",
     "- Run the test command after changes. Do not claim success without the command output.",
     "- Do not run git push, git merge/rebase to main, rm -rf, or read .env.",
     "- If the task is already satisfied, run tests once and done.",
@@ -119,6 +121,7 @@ function workbenchSystemPrompt(): string {
     '{"thought":"...","action":{"type":"browser","action":"eval","script":"document.title"}}',
     '{"thought":"...","action":{"type":"browser","action":"text"}}',
     '{"thought":"...","action":{"type":"write","path":"docs/qa-evidence/report.md","content":"..."}}',
+    '{"thought":"...","action":{"type":"edit","path":"docs/qa-evidence/report.md","old":"exact snippet","new":"replacement"}}',
     '{"thought":"...","action":{"type":"done","summary":"per-item result, uncovered items, reproduction steps, residual risk"}}',
     "",
     "Rules:",
@@ -169,18 +172,22 @@ export function isDependencyInstallCommand(command: string): boolean {
   return false;
 }
 
-function isTransientModelError(error: unknown): boolean {
+function isRetryableModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  // Do not retry a timeout: it already consumed the full per-call budget, so a
-  // second attempt doubles the silence without making success more likely.
-  if (/timeout|timed out|aborted/i.test(message)) return false;
-  return /ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(message);
+  return /timeout|timed out|aborted|ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|503|502|504/i.test(
+    message,
+  );
 }
 
-/** Retry one transient gateway failure before failing the whole task. */
+/**
+ * Retry one transient gateway failure before failing the whole task. A timeout
+ * is retried only when the remaining task budget can absorb another full call;
+ * otherwise retrying just doubles the silence and still fails.
+ */
 async function generateWithRetry(
   gateway: Pick<ModelGateway, "generateText">,
   request: Parameters<ModelGateway["generateText"]>[0],
+  deadline?: number,
 ): Promise<string> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -188,8 +195,10 @@ async function generateWithRetry(
       return await gateway.generateText(request);
     } catch (error) {
       lastError = error;
-      if (request.signal?.aborted || !isTransientModelError(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      if (request.signal?.aborted || !isRetryableModelError(error)) throw error;
+      const timeout = Number(request.timeoutMs ?? 300_000);
+      if (deadline !== undefined && deadline - Date.now() < timeout) throw error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_500));
     }
   }
   throw lastError instanceof Error ? lastError : new Error("model gateway failed");
@@ -272,13 +281,17 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
       // minutes. The per-call cap must not be shorter than the task budget, or
       // healthy work dies as a fake "channel timeout".
       const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
-      const text = await generateWithRetry(gateway, {
-        system,
-        prompt: transcript,
-        model: input.model,
-        signal: input.signal,
-        timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
-      });
+      const text = await generateWithRetry(
+        gateway,
+        {
+          system,
+          prompt: transcript,
+          model: input.model,
+          signal: input.signal,
+          timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
+        },
+        deadline,
+      );
       const parsed = parseAction(text);
       const action = parsed.action;
       if (!action || typeof action.type !== "string") {
@@ -313,6 +326,31 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
           }
           await writeWorkspaceFile(input.root, path, String(action.content ?? ""));
           transcript += `\n\nAction: write ${path}\nObservation: file written (${String(action.content ?? "").length} chars)`;
+        } else if (action.type === "edit") {
+          const path = String(action.path ?? "");
+          if (isWorkbench) {
+            const normalized = path.replace(/^\.\//, "");
+            if (!normalized.startsWith("docs/") && !normalized.startsWith("qa-evidence/")) {
+              throw new Error("workbench may only edit evidence under docs/ or qa-evidence/");
+            }
+          }
+          const oldText = String(action.old ?? action.oldString ?? "");
+          const newText = String(action.new ?? action.newString ?? "");
+          if (!oldText) throw new Error("edit requires a non-empty old snippet");
+          const original = await readWorkspaceFile(input.root, path);
+          const index = original.indexOf(oldText);
+          if (index < 0) {
+            throw new Error("edit target not found; read the file and copy the exact existing snippet");
+          }
+          if (original.indexOf(oldText, index + oldText.length) >= 0) {
+            throw new Error("edit target is ambiguous; include more surrounding context");
+          }
+          await writeWorkspaceFile(
+            input.root,
+            path,
+            original.slice(0, index) + newText + original.slice(index + oldText.length),
+          );
+          transcript += `\n\nAction: edit ${path}\nObservation: replaced ${oldText.length} chars with ${newText.length} chars`;
         } else if (action.type === "run") {
           const command = String(action.command ?? "").trim();
           if (!command) throw new Error("empty command");

@@ -205,6 +205,53 @@ export class Orchestrator {
    * before a task becomes runnable. This is an internal confirmation step and
    * never asks the client to approve execution details.
    */
+  /**
+   * Action failures used to live only in run metadata, so a role could claim
+   * "I cancelled it" while `update_task` actually returned "task not found".
+   * Surface a compact system note so the room (and the operator) can see it.
+   */
+  private async reportActionNotes(
+    bundle: RoomBundle,
+    role: RoleRow,
+    notes: string[],
+    parentMessageId: string,
+  ): Promise<void> {
+    const failures = notes.filter((note) =>
+      /task not found|task title is ambiguous|task already exists|create_task ignored|unsupported action|update_task requires|action .* failed|^illegal /i.test(
+        note,
+      ),
+    );
+    if (!failures.length) return;
+    const messageId = uuidv7();
+    await insertMessage({
+      id: messageId,
+      tenantId: bundle.project.tenantId,
+      projectId: bundle.project.id,
+      roomId: bundle.room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+      content: [
+        `${role.displayName} 的部分动作没有生效：`,
+        ...failures.slice(0, 6).map((note) => `- ${note.slice(0, 300)}`),
+        "相关任务/状态可能没有按消息里说的改变，请用 taskId 重试。",
+      ].join("\n"),
+      metadata: {
+        kind: "action_notes",
+        roleKey: role.key,
+        parentMessageId,
+        notes: failures.slice(0, 12),
+      },
+    });
+    await this.emit(EVENT_TYPES.messageCreated, {
+      messageId,
+      roomId: bundle.room.id,
+      senderType: "system",
+      senderName: "系统",
+      type: "system_event",
+    });
+  }
+
   async reviewTaskAssignments(
     bundle: RoomBundle,
     taskIds: string[],
@@ -523,6 +570,7 @@ export class Orchestrator {
         messageId,
         emit: this.emit,
       });
+      await this.reportActionNotes(bundle, lead, applied.notes, messageId);
       await this.reviewTaskAssignments(bundle, applied.taskIds, turnId);
 
       await db
@@ -1032,6 +1080,7 @@ export class Orchestrator {
             messageId,
             emit: this.emit,
           });
+          await this.reportActionNotes(bundle, item.role, applied.notes, messageId);
           if (applied.taskIds.length && !waitingForUser) {
             await this.reviewTaskAssignments(bundle, applied.taskIds, turnId);
           }
