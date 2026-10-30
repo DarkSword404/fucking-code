@@ -152,7 +152,25 @@ interface DockerPreview {
   container: string;
 }
 
+function removeProjectPreviewContainers(projectId: string): void {
+  const dockerBin = process.env.DOCKER_BIN ?? "docker";
+  try {
+    const listed = spawnSync(
+      dockerBin,
+      ["ps", "-aq", "--filter", `label=fucking-code.project=${projectId}`],
+      { encoding: "utf8", timeout: 15_000 },
+    );
+    const ids = (listed.stdout ?? "").split(/\s+/).filter(Boolean);
+    if (ids.length) {
+      spawnSync(dockerBin, ["rm", "-f", ...ids], { stdio: "ignore", timeout: 60_000 });
+    }
+  } catch {
+    // best effort; the new container still starts
+  }
+}
+
 function startDockerPreview(input: {
+  projectId: string;
   repoPath: string;
   port: number;
   script: string | null;
@@ -196,6 +214,8 @@ function startDockerPreview(input: {
     "fucking-code.managed=preview",
     "--label",
     `fucking-code.app=${appInstanceId()}`,
+    "--label",
+    `fucking-code.project=${input.projectId}`,
     "-e",
     "HOME=/tmp",
     "-e",
@@ -314,7 +334,11 @@ async function startPreviewInternal(
 
   if (mode === "docker") {
     const publicMode = publicPreviewEnabled();
-    const docker = startDockerPreview({ repoPath, port, script, publicMode });
+    // A previous start may have failed after the container was created but
+    // before it was registered. Remove any stale preview for this project so
+    // two containers can never share one project slot.
+    removeProjectPreviewContainers(projectId);
+    const docker = startDockerPreview({ projectId, repoPath, port, script, publicMode });
     const url = publicMode ? publicPreviewUrl(port) : `/preview/${token}/`;
     const collect = (chunk: Buffer) => {
       output = `${output}${chunk.toString()}`.slice(-8000);

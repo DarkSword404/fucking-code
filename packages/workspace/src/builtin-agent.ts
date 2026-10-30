@@ -70,6 +70,30 @@ function firstJsonObject(text: string): string | null {
   return null;
 }
 
+/**
+ * DeepSeek sometimes emits its native tool-call markup instead of the JSON
+ * contract. Accept the common invoke/parameter shape so a read or edit is not
+ * turned into a wasted step.
+ */
+function parseDsml(text: string): ParsedAction | null {
+  const invoke =
+    /<[^>]*DSML[^>]*invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/[^>]*invoke>/i.exec(text);
+  if (!invoke) return null;
+  const type = invoke[1] ?? "";
+  if (!["read", "list", "run", "write", "edit", "fetch", "browser", "done"].includes(type)) {
+    return null;
+  }
+  const args: Record<string, string> = {};
+  for (const match of (invoke[2] ?? "").matchAll(
+    /<[^>]*DSML[^>]*parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/[^>]*parameter>/gi,
+  )) {
+    const key = match[1] ?? "";
+    const value = (match[2] ?? "").replace(/\n$/, "");
+    if (key) args[key] = value;
+  }
+  return { action: { type, ...args } as ParsedAction["action"] };
+}
+
 function parseAction(text: string): ParsedAction {
   /**
    * Only accept an object that actually contains an `action` object. A later
@@ -118,6 +142,8 @@ function parseAction(text: string): ParsedAction {
     const parsed = parseCandidate(candidate);
     if (parsed) return parsed;
   }
+  const dsml = parseDsml(text);
+  if (dsml) return dsml;
   return {};
 }
 function clip(value: string, max: number): string {

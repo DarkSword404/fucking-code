@@ -231,6 +231,45 @@ const notAnAction = { hello: "world" };
   });
 });
 
+describe("builtin DeepSeek invoke markup", () => {
+  test("accepts native invoke markup as an action", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-dsml-"));
+    roots.push(root);
+    await writeFile(join(root, "note.txt"), "ok\n");
+
+    const bar = String.fromCharCode(0xff5c);
+    const open = (name: string) => `<${bar}DSML${bar} ${name}>`;
+    const close = (name: string) => `<${bar}/DSML${bar} ${name}>`;
+    const raw = [
+      open("calls"),
+      open('invoke name="read"'),
+      `${open('parameter name="path" string="true"')}note.txt${close("parameter")}`,
+      close("invoke"),
+      close("calls"),
+    ].join("\n");
+
+    const gateway = new ScriptedGateway([
+      raw,
+      JSON.stringify({ action: { type: "done", summary: "dsml read" } }),
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "dsml",
+      taskDescription: "read via native markup",
+      acceptance: ["read"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 3,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(result.summary).toContain("dsml read");
+  });
+});
+
 describe("builtin model retry", () => {
   test("retries one transient timeout when the task budget allows it", async () => {
     const root = await mkdtemp(join(tmpdir(), "fc-builtin-retry-"));
