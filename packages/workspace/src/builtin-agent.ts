@@ -366,11 +366,15 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
       // healthy work dies as a fake "channel timeout".
       const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
       const callStarted = Date.now();
+      // The gateway flattens system+prompt into one message, so the system
+      // rule is far from the generation point. Repeat the output contract at
+      // the end; otherwise models drift into narrating "Action:"/"Observation:".
+      const prompt = `${transcript}\n\n---\nReply now with exactly one JSON object (no markdown, no "Action:" / "Observation:" prose).`;
       const text = await generateWithRetry(
         gateway,
         {
           system,
-          prompt: transcript,
+          prompt,
           model: input.model,
           signal: input.signal,
           timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
