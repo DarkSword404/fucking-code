@@ -2801,7 +2801,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     by: user.displayName,
     forced: Boolean(body.force),
   });
-  if (to === "coding") void autoStartNext(project.id);
+  void autoStartNext(project.id);
   await audit({
     tenantId: project.tenantId,
     projectId: project.id,

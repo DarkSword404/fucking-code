@@ -2,87 +2,136 @@ import { createRuntime } from "@devteam/agents";
 import { emitEvent } from "@devteam/db";
 
 /**
- * One in-process queue per room. A new user message waits for the previous
+ * One FIFO chain per key. A new user message waits for the previous
  * orchestration to finish, so two humans (or a human + a handoff) cannot
  * interleave writes for the same conversation.
+ *
+ * A chain whose task never settles would otherwise block that key forever
+ * (`isRunning` stays true and every scheduler tick returns early). The
+ * watchdog (`abortStale`) aborts overdue tasks and, as a last resort, drops a
+ * wedged chain so new work can start. Dropped chains are safe: their `finally`
+ * only clears the map when it still owns the current entry.
  */
-class RoomQueue {
+export class KeyedQueue {
   private chains = new Map<string, Promise<void>>();
-  private controllers = new Map<string, AbortController>();
+  private controllers = new Map<string, Set<AbortController>>();
+  private activeControllers = new Map<string, AbortController>();
+  private startedAt = new Map<string, number>();
+  private abortedAt = new Map<string, number>();
 
-  enqueue(roomId: string, task: (signal: AbortSignal) => Promise<void>): void {
+  enqueue(key: string, task: (signal: AbortSignal) => Promise<void>): void {
     const controller = new AbortController();
-    this.controllers.set(roomId, controller);
-    const previous = this.chains.get(roomId) ?? Promise.resolve();
+    const controllers = this.controllers.get(key) ?? new Set<AbortController>();
+    controllers.add(controller);
+    this.controllers.set(key, controllers);
+
+    const previous = this.chains.get(key) ?? Promise.resolve();
+    // Start the clock when this item actually begins, not when it is queued:
+    // otherwise a long-running predecessor makes queued work look overdue.
     const run = previous.then(
-      () => task(controller.signal),
-      () => task(controller.signal),
+      () => {
+        this.startedAt.set(key, Date.now());
+        this.abortedAt.delete(key);
+        this.activeControllers.set(key, controller);
+        return task(controller.signal);
+      },
+      () => {
+        this.startedAt.set(key, Date.now());
+        this.abortedAt.delete(key);
+        this.activeControllers.set(key, controller);
+        return task(controller.signal);
+      },
     );
     const guarded = run
       .catch((error) => {
-        console.error("[orchestrator] run failed", error instanceof Error ? error.message : error);
+        console.error("[queue] run failed", error instanceof Error ? error.message : error);
       })
       .finally(() => {
-        if (this.chains.get(roomId) === guarded) this.chains.delete(roomId);
-        if (this.controllers.get(roomId) === controller) this.controllers.delete(roomId);
-      });
-    this.chains.set(roomId, guarded);
-  }
-
-  stop(roomId: string): boolean {
-    const controller = this.controllers.get(roomId);
-    if (!controller) return false;
-    controller.abort();
-    return true;
-  }
-
-  isRunning(roomId: string): boolean {
-    return this.chains.has(roomId);
-  }
-}
-
-export const roomQueue = new RoomQueue();
-
-/** One code run per workspace at a time. */
-class WorkQueue {
-  private chains = new Map<string, Promise<void>>();
-  private controllers = new Map<string, AbortController>();
-
-  enqueue(workspaceId: string, task: (signal: AbortSignal) => Promise<void>): void {
-    const controller = new AbortController();
-    this.controllers.set(workspaceId, controller);
-    const previous = this.chains.get(workspaceId) ?? Promise.resolve();
-    const run = previous.then(
-      () => task(controller.signal),
-      () => task(controller.signal),
-    );
-    const guarded = run
-      .catch((error) => {
-        console.error("[workspace] run failed", error instanceof Error ? error.message : error);
-      })
-      .finally(() => {
-        if (this.chains.get(workspaceId) === guarded) this.chains.delete(workspaceId);
-        if (this.controllers.get(workspaceId) === controller) {
-          this.controllers.delete(workspaceId);
+        const remaining = this.controllers.get(key);
+        remaining?.delete(controller);
+        if (remaining && remaining.size === 0) this.controllers.delete(key);
+        if (this.activeControllers.get(key) === controller) {
+          this.activeControllers.delete(key);
+        }
+        if (this.chains.get(key) === guarded) {
+          this.chains.delete(key);
+          this.startedAt.delete(key);
+          this.abortedAt.delete(key);
         }
       });
-    this.chains.set(workspaceId, guarded);
+    this.chains.set(key, guarded);
   }
 
-  isRunning(workspaceId: string): boolean {
-    return this.chains.has(workspaceId);
-  }
-
-  stop(workspaceId: string): boolean {
-    const controller = this.controllers.get(workspaceId);
-    if (!controller) return false;
-    controller.abort();
+  stop(key: string): boolean {
+    const controllers = this.controllers.get(key);
+    if (!controllers?.size) return false;
+    for (const controller of controllers) controller.abort();
     return true;
+  }
+
+  isRunning(key: string): boolean {
+    return this.chains.has(key);
+  }
+
+  /**
+   * Abort work that exceeded its budget. If the task ignores the abort (for
+   * example a stuck database call), drop the chain after a grace period so the
+   * key is not locked for the lifetime of the process.
+   */
+  abortStale(maxMs: number, graceMs = maxMs): number {
+    const now = Date.now();
+    let recovered = 0;
+    for (const [key, started] of this.startedAt) {
+      const age = now - started;
+      if (age < maxMs) continue;
+      const abortedAt = this.abortedAt.get(key);
+      if (!abortedAt) {
+        this.abortedAt.set(key, now);
+        // Abort only the run that is actually executing; queued items have
+        // not consumed any budget yet.
+        this.activeControllers.get(key)?.abort();
+        console.error(
+          `[queue] ${key} exceeded ${Math.round(maxMs / 1000)}s; aborting`,
+        );
+        recovered += 1;
+        continue;
+      }
+      if (age >= maxMs + graceMs) {
+        this.chains.delete(key);
+        this.startedAt.delete(key);
+        this.abortedAt.delete(key);
+        this.controllers.delete(key);
+        this.activeControllers.delete(key);
+        console.error(
+          `[queue] ${key} did not settle after abort; dropping wedged chain`,
+        );
+        recovered += 1;
+      }
+    }
+    return recovered;
   }
 }
 
-export const workQueue = new WorkQueue();
+export const roomQueue = new KeyedQueue();
+/** One code run per workspace at a time. */
+export const workQueue = new KeyedQueue();
 export const runtime = createRuntime();
+
+/** Abort overdue room turns / work runs. Called by the scheduler watchdog. */
+export function guardStaleQueues(): number {
+  const positive = (value: string | undefined, fallback: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  const roomMax = positive(process.env.ROOM_TURN_TIMEOUT_MS, 45 * 60_000);
+  const roomGrace = positive(process.env.ROOM_TURN_GRACE_MS, 10 * 60_000);
+  const workMax = positive(process.env.WORK_QUEUE_TIMEOUT_MS, 90 * 60_000);
+  const workGrace = positive(process.env.WORK_QUEUE_GRACE_MS, 30 * 60_000);
+  return (
+    roomQueue.abortStale(roomMax, roomGrace) +
+    workQueue.abortStale(workMax, workGrace)
+  );
+}
 
 /** Emit helper that injects the scope required by the persisted event log. */
 export function projectEmitter(tenantId: string, projectId: string) {

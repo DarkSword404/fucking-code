@@ -37,12 +37,18 @@ import {
   runTaskWork,
   validateRepoPath,
 } from "@devteam/workspace";
-import { projectEmitter, roomQueue, runtime, workQueue } from "./orchestration.js";
+import {
+  guardStaleQueues,
+  projectEmitter,
+  roomQueue,
+  runtime,
+  workQueue,
+} from "./orchestration.js";
 import { previewLocalUrlForProject, previewUrlForProject, startPreview } from "./preview.js";
 
-const schedulerLocks = new Set<string>();
+const schedulerLocks = new Map<string, number>();
 /** Projects with a task in the middle of workspace allocation. */
-const startingProjects = new Set<string>();
+const startingProjects = new Map<string, number>();
 const pausedProjects = new Set<string>();
 /** Why the scheduler last paused a project. User-initiated pauses have no entry. */
 const autoPauseReasons = new Map<string, string>();
@@ -55,15 +61,151 @@ const AUTO_PAUSE_LABELS: Record<string, string> = {
   task_merged: "任务刚合并",
   task_failed: "任务失败",
 };
-const phaseNudgeLocks = new Set<string>();
-/** Projects currently repairing orphaned `proposed` tasks. */
-const proposalRepairLocks = new Set<string>();
+/** Locks carry timestamps so a wedged promise cannot own a project forever. */
+const phaseNudgeLocks = new Map<string, number>();
 const lastPhaseNudge = new Map<string, number>();
 const lastGateNotice = new Map<string, number>();
 const lastTriageNudge = new Map<string, number>();
-const triageLocks = new Set<string>();
+/** Projects currently repairing orphaned `proposed` tasks. */
+const proposalRepairLocks = new Map<string, number>();
+const triageLocks = new Map<string, number>();
 const lastOpsHeartbeat = new Map<string, number>();
-const internalMergeLocks = new Set<string>();
+const lastNotice = new Map<string, number>();
+const internalMergeLocks = new Map<string, number>();
+
+/**
+ * Claim a per-project lock. Returns a token, or null while a fresh lock is
+ * held. A lock older than `ttlMs` is considered wedged and can be reclaimed,
+ * so a promise that never settles cannot freeze a project forever.
+ */
+function claimLock(
+  locks: Map<string, number>,
+  projectId: string,
+  ttlMs: number,
+): number | null {
+  const heldSince = locks.get(projectId);
+  if (heldSince !== undefined && Date.now() - heldSince < ttlMs) return null;
+  const token = Date.now();
+  locks.set(projectId, token);
+  return token;
+}
+
+function releaseLock(
+  locks: Map<string, number>,
+  projectId: string,
+  token?: number,
+): void {
+  // Only the owner may release; a reclaimed stale lock has a new token.
+  if (token === undefined || locks.get(projectId) === token) locks.delete(projectId);
+}
+
+/** Post an operational notice at most once per cooldown window. */
+async function noticeOnce(
+  project: ProjectRow,
+  roomId: string,
+  key: string,
+  cooldownMs: number,
+  content: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const cacheKey = `${project.id}:${key}`;
+  const last = lastNotice.get(cacheKey) ?? 0;
+  if (Date.now() - last < cooldownMs) return;
+  lastNotice.set(cacheKey, Date.now());
+  const messageId = uuidv7();
+  await insertMessage({
+    id: messageId,
+    tenantId: project.tenantId,
+    projectId: project.id,
+    roomId,
+    senderType: "system",
+    senderName: "系统",
+    type: "system_event",
+    content,
+    metadata: { ...metadata, kind: key },
+  });
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.messageCreated, {
+    messageId,
+    roomId,
+    senderType: "system",
+    senderName: "系统",
+    type: "system_event",
+  });
+}
+
+/**
+ * If the process survived but a work run vanished (rejected promise, killed
+ * worker, dropped queue entry), an `in_progress` task has no worker and is
+ * invisible to the scheduler, which only picks `ready`. Requeue those rows so
+ * the project cannot idle behind a ghost task. Startup recovery handles the
+ * restart case; this handles the running-process case.
+ */
+async function recoverProjectOrphanedTasks(
+  project: ProjectRow,
+  roomId: string,
+): Promise<number> {
+  const db = getDb();
+  const rows = await db
+    .select({ task: tasks, workspaceId: workspaces.id })
+    .from(tasks)
+    .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
+    .where(and(eq(tasks.projectId, project.id), eq(tasks.status, "in_progress")));
+  let recovered = 0;
+  for (const row of rows) {
+    if (workQueue.isRunning(row.workspaceId)) continue;
+    const attempts = Number(row.task.evidence?.["orphanRecoveries"] ?? 0) + 1;
+    // Retry a vanished worker, but do not loop forever on a task that keeps
+    // killing its run. After three ghost runs, park it for Lead triage.
+    const giveUp = attempts >= 3;
+    const [updated] = await db
+      .update(tasks)
+      .set({
+        status: giveUp ? "blocked" : "ready",
+        blockedReason: giveUp
+          ? "任务连续 3 次执行进程消失，已挂起等待返工/取消。"
+          : null,
+        evidence: {
+          ...row.task.evidence,
+          orphanRecoveries: attempts,
+          recoveredFromInProgressAt: new Date().toISOString(),
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, row.task.id), eq(tasks.status, "in_progress")))
+      .returning();
+    if (!updated) continue;
+    recovered += 1;
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+      taskId: row.task.id,
+      action: giveUp ? "blocked" : "recovered",
+      status: giveUp ? "blocked" : "ready",
+      reason: "orphaned_in_progress",
+      attempts,
+    }).catch(() => undefined);
+  }
+  if (recovered) {
+    await noticeOnce(
+      project,
+      roomId,
+      "orphaned_in_progress",
+      10 * 60_000,
+      `发现 ${recovered} 个 in_progress 任务没有执行进程，已重新排队（连续 3 次会转为 blocked 等待分诊）。`,
+      { recovered },
+    ).catch(() => undefined);
+  }
+  return recovered;
+}
+
+/**
+ * Artifacts are internal review material. Leftover `in_review` rows would make
+ * `hasPendingDecisions` true forever with no reviewer to clear them.
+ */
+async function acceptLegacyInReviewArtifacts(projectId: string): Promise<void> {
+  await getDb()
+    .update(artifacts)
+    .set({ status: "accepted", updatedAt: new Date() })
+    .where(and(eq(artifacts.projectId, projectId), eq(artifacts.status, "in_review")));
+}
 
 export async function hasPendingDecisions(projectId: string): Promise<boolean> {
   const db = getDb();
@@ -98,8 +240,9 @@ async function repairOrphanProposedTasks(
   room: { id: string },
   proposed: TaskRow[],
 ): Promise<void> {
-  if (!proposed.length || proposalRepairLocks.has(project.id)) return;
-  proposalRepairLocks.add(project.id);
+  if (!proposed.length) return;
+  const repairToken = claimLock(proposalRepairLocks, project.id, 15 * 60_000);
+  if (!repairToken) return;
   try {
     const bundle = await loadRoomBundle(project.id, room.id, 0);
     if (!bundle) return;
@@ -153,7 +296,7 @@ async function repairOrphanProposedTasks(
       error instanceof Error ? error.message : error,
     );
   } finally {
-    proposalRepairLocks.delete(project.id);
+    releaseLock(proposalRepairLocks, project.id, repairToken);
   }
 }
 
@@ -163,10 +306,10 @@ async function repairOrphanProposedTasks(
  * This is deliberately not a client question; engineering triage is internal.
  */
 async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<void> {
-  if (triageLocks.has(projectId)) return;
   const last = lastTriageNudge.get(projectId) ?? 0;
   if (Date.now() - last < 15 * 60_000) return;
-  triageLocks.add(projectId);
+  const triageToken = claimLock(triageLocks, projectId, 20 * 60_000);
+  if (!triageToken) return;
   try {
     const db = getDb();
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
@@ -178,6 +321,13 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
       .from(workspaces)
       .where(eq(workspaces.projectId, projectId));
     if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
+    const bundle = await loadRoomBundle(project.id, room.id, 0);
+    // A disabled `lead` must not turn the triage turn into a no-op.
+    const triageRole = bundle
+      ? resolveEnabledOwner(bundle.roles, "lead", project.phase as WorkflowPhase)
+      : "lead";
+    const triageName =
+      bundle?.roles.find((role) => role.key === triageRole)?.displayName ?? triageRole;
 
     lastTriageNudge.set(projectId, Date.now());
     const lines = stuck.slice(0, 8).map((task) => {
@@ -193,7 +343,7 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
       "编码队列当前没有 ready 任务，但有任务卡住：",
       ...lines,
       "",
-      "请 Lead 在团队内部处理：取消、返工、拆分或新建任务；工程事项不要问甲方。",
+      `请 ${triageName} 在团队内部处理：取消、返工、拆分或新建任务；工程事项不要问甲方。`,
       "处理完用 update_task/create_task 落状态，自动开发会继续。",
     ].join("\n");
     const messageId = uuidv7();
@@ -231,8 +381,8 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
             roomId: room.id,
             userMessageId: messageId,
             content,
-            mentions: ["lead"],
-            participantKeys: ["lead"],
+            mentions: [triageRole],
+            participantKeys: [triageRole],
             userName: "系统",
             triggerLabel: "系统（任务分诊）",
             readOnly: false,
@@ -248,7 +398,7 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
   } catch (error) {
     console.error("[auto-dev] task triage failed", error);
   } finally {
-    triageLocks.delete(projectId);
+    releaseLock(triageLocks, projectId, triageToken);
   }
 }
 
@@ -292,13 +442,26 @@ function gateOwnerRole(unmetKeys: string[], phase: WorkflowPhase): string {
   return phaseOwner[phase] ?? "lead";
 }
 
+function resolveEnabledOwner(
+  roles: Array<{ key: string; enabled: boolean }>,
+  preferred: string,
+  phase: WorkflowPhase,
+): string {
+  const enabled = roles.filter((role) => role.enabled).map((role) => role.key);
+  if (enabled.includes(preferred)) return preferred;
+  const phaseOwner = gateOwnerRole([], phase);
+  if (enabled.includes(phaseOwner)) return phaseOwner;
+  if (enabled.includes("lead")) return "lead";
+  return enabled[0] ?? "lead";
+}
+
 export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
-  if (phaseNudgeLocks.has(projectId)) return;
   const last = lastPhaseNudge.get(projectId) ?? 0;
   // If the Lead declines, do not re-ask on every scheduler tick. Ten minutes
   // is enough for new evidence to arrive without flooding the room.
   if (Date.now() - last < 10 * 60_000) return;
-  phaseNudgeLocks.add(projectId);
+  const phaseToken = claimLock(phaseNudgeLocks, projectId, 25 * 60_000);
+  if (!phaseToken) return;
   try {
     const db = getDb();
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
@@ -306,7 +469,18 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     const from = project.phase as WorkflowPhase;
     const next = nextPhase(from);
     if (!next || !canTransitionPhase(from, next)) return;
+    // Legacy in_review artifacts are internal material; clear them before the
+    // pending-decision check so they cannot block the gate forever.
+    await acceptLegacyInReviewArtifacts(projectId);
     if (await hasPendingDecisions(projectId)) return;
+    // Ready work is the scheduler's job; a simultaneous gate turn would race
+    // it and add noise. Only nudge when the queue is genuinely empty.
+    const [readyWork] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, projectId), eq(tasks.status, "ready")))
+      .limit(1);
+    if (readyWork) return;
 
     const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
     if (!room || roomQueue.isRunning(room.id)) return;
@@ -318,6 +492,17 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
 
     const bundle = await loadRoomBundle(project.id, room.id, 0);
     if (!bundle) return;
+    if (!bundle.roles.some((role) => role.enabled)) {
+      await noticeOnce(
+        project,
+        room.id,
+        "no_enabled_roles",
+        30 * 60_000,
+        "所有角色都被禁用，自动开发无法推进；请至少启用一个角色。",
+        {},
+      ).catch(() => undefined);
+      return;
+    }
     const requirements = gateRequirementsForTransition(from, next, {
       artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
       tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
@@ -331,7 +516,8 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       if (Date.now() - lastNotice >= 10 * 60_000) {
         lastGateNotice.set(projectId, Date.now());
         const unmet = requirements.filter((r) => !r.met);
-        const owner = gateOwnerRole(unmet.map((r) => r.key), from);
+        const preferred = gateOwnerRole(unmet.map((r) => r.key), from);
+        const owner = resolveEnabledOwner(bundle.roles, preferred, from);
         const ownerName = bundle.roles.find((role) => role.key === owner)?.displayName ?? owner;
         const messageId = uuidv7();
         const content = [
@@ -458,7 +644,7 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
   } catch (error) {
     console.error("[auto-dev] phase proposal nudge failed", error);
   } finally {
-    phaseNudgeLocks.delete(projectId);
+    releaseLock(phaseNudgeLocks, projectId, phaseToken);
   }
 }
 
@@ -856,14 +1042,14 @@ export async function startTaskForProject(
   // Workspace creation is async (dependency bootstrap). Without this lock the
   // periodic scheduler can start a second task while the first is still
   // allocating its worktree.
-  if (startingProjects.has(project.id)) {
+  const startingToken = claimLock(startingProjects, project.id, 10 * 60_000);
+  if (!startingToken) {
     throw new Error("another task is already starting for this project");
   }
-  startingProjects.add(project.id);
   try {
     return await enqueueTaskWork(project, task, options);
   } finally {
-    startingProjects.delete(project.id);
+    releaseLock(startingProjects, project.id, startingToken);
   }
 }
 
@@ -1076,8 +1262,8 @@ async function autoMergeReviewedTask(input: {
     .where(and(eq(workspaces.id, input.workspaceId), eq(workspaces.projectId, input.projectId)))
     .limit(1);
   if (!task || !workspace) return false;
-  if (internalMergeLocks.has(task.id)) return false;
-  internalMergeLocks.add(task.id);
+  const mergeToken = claimLock(internalMergeLocks, task.id, 10 * 60_000);
+  if (!mergeToken) return false;
   try {
   const evidence = (task.evidence ?? {}) as Record<string, unknown>;
   const verification = evidence["verification"] as { verdict?: string } | undefined;
@@ -1221,7 +1407,7 @@ async function autoMergeReviewedTask(input: {
     return false;
   }
   } finally {
-    internalMergeLocks.delete(task.id);
+    releaseLock(internalMergeLocks, task.id, mergeToken);
   }
 }
 
@@ -1254,17 +1440,102 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
  * idempotent; the periodic loop and event hooks may both call it.
  */
 export async function autoStartNext(projectId: string): Promise<void> {
-  if (schedulerLocks.has(projectId) || startingProjects.has(projectId)) return;
-  schedulerLocks.add(projectId);
+  const schedulerToken = claimLock(schedulerLocks, projectId, 30 * 60_000);
+  if (!schedulerToken) return;
+  const startingSince = startingProjects.get(projectId);
+  if (startingSince !== undefined && Date.now() - startingSince < 10 * 60_000) {
+    releaseLock(schedulerLocks, projectId, schedulerToken);
+    return;
+  }
   try {
     const db = getDb();
     let [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!project) return;
     if (project.status === "archived") return;
-    if (!["coding", "testing", "deployment", "operations"].includes(project.phase)) return;
-    if (!project.repoPath) return;
+    // Requirements/design may still have read-only workbench tasks (for
+    // example the security-design investigation); code tasks stay blocked
+    // outside coding by the candidate filter below.
+    if (
+      !["requirements", "design", "coding", "testing", "deployment", "operations"].includes(
+        project.phase,
+      )
+    ) {
+      return;
+    }
     if (await hasUnansweredClientQuestion(projectId)) return;
+
+    // Projects can be created before a repository exists. Create one instead
+    // of returning silently: a missing repo used to stop the queue forever.
+    if (!project.repoPath) {
+      try {
+        project = await ensureProjectRepository(projectId);
+      } catch (error) {
+        const [room] = await db
+          .select({ id: rooms.id })
+          .from(rooms)
+          .where(eq(rooms.projectId, projectId))
+          .limit(1);
+        if (room) {
+          await noticeOnce(
+            project,
+            room.id,
+            "repo_missing",
+            10 * 60_000,
+            `项目没有可用仓库，自动开发暂时无法启动：${
+              error instanceof Error ? error.message : String(error)
+            }。请检查 PROJECT_REPO_ROOT / 仓库配置。`,
+            {},
+          ).catch(() => undefined);
+        }
+        return;
+      }
+    }
     const repoPath = project.repoPath;
+    if (!repoPath) {
+      const [room] = await db
+        .select({ id: rooms.id })
+        .from(rooms)
+        .where(eq(rooms.projectId, projectId))
+        .limit(1);
+      if (room) {
+        await noticeOnce(
+          project,
+          room.id,
+          "repo_missing",
+          10 * 60_000,
+          "项目没有可用仓库，自动开发无法启动；请检查 PROJECT_REPO_ROOT / 仓库配置。",
+          {},
+        ).catch(() => undefined);
+      }
+      return;
+    }
+
+    try {
+      await validateRepoPath(repoPath);
+    } catch (error) {
+      const [room] = await db
+        .select({ id: rooms.id })
+        .from(rooms)
+        .where(eq(rooms.projectId, projectId))
+        .limit(1);
+      if (room) {
+        await noticeOnce(
+          project,
+          room.id,
+          "repo_invalid",
+          10 * 60_000,
+          `项目仓库不可用（${repoPath}）：${
+            error instanceof Error ? error.message : String(error)
+          }。自动开发会保持暂停，修复后自动继续。`,
+          { repoPath },
+        ).catch(() => undefined);
+      }
+      return;
+    }
+
+    // Artifacts are internal material; a leftover in_review row must not look
+    // like an unanswered client decision forever.
+    await acceptLegacyInReviewArtifacts(projectId);
 
     // A task that just reached review is not a human decision yet. Merge
     // verified review tasks before treating review as a pending decision;
@@ -1297,12 +1568,6 @@ export async function autoStartNext(projectId: string): Promise<void> {
       return;
     }
 
-    try {
-      await validateRepoPath(repoPath);
-    } catch {
-      return;
-    }
-
     const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
     if (!room) return;
     if (roomQueue.isRunning(room.id)) return;
@@ -1312,6 +1577,9 @@ export async function autoStartNext(projectId: string): Promise<void> {
       .from(workspaces)
       .where(eq(workspaces.projectId, projectId));
     if (workspaceRows.some((workspace) => workQueue.isRunning(workspace.id))) return;
+
+    // A ghost in_progress task would keep the queue "empty" forever.
+    await recoverProjectOrphanedTasks(project, room.id);
 
     let taskRows = await db
       .select()
@@ -1345,7 +1613,9 @@ export async function autoStartNext(projectId: string): Promise<void> {
     if (!candidate) {
       const stuck = taskRows.filter(
         (task) =>
-          ["proposed", "failed", "blocked", "needs_replan", "stale"].includes(task.status) ||
+          ["proposed", "review", "testing", "failed", "blocked", "needs_replan", "stale"].includes(
+            task.status,
+          ) ||
           // A ready code task in testing/deployment/operations can never be
           // picked by the scheduler. Surface it for internal triage instead of
           // silently leaving a non-empty queue that looks stuck.
@@ -1384,16 +1654,33 @@ export async function autoStartNext(projectId: string): Promise<void> {
       senderName: "系统",
       type: "system_event",
     });
-    await startTaskForProject(project, candidate, { auto: true });
+    try {
+      await startTaskForProject(project, candidate, { auto: true });
+    } catch (error) {
+      // Workspace allocation can fail transiently. Keep the task ready and
+      // surface the reason instead of retrying silently every 20 seconds.
+      await noticeOnce(
+        project,
+        room.id,
+        "task_start_failed",
+        10 * 60_000,
+        `任务《${candidate.title}》启动失败：${
+          error instanceof Error ? error.message : String(error)
+        }。任务保留在 ready，稍后自动重试。`,
+        { taskId: candidate.id },
+      ).catch(() => undefined);
+    }
   } catch (error) {
     console.error("[auto-dev] scheduler failed", error);
   } finally {
-    schedulerLocks.delete(projectId);
+    releaseLock(schedulerLocks, projectId, schedulerToken);
   }
 }
 
 export function resumeAutoDevelopment(projectId: string): void {
-  if (!pausedProjects.delete(projectId)) return;
+  pausedProjects.delete(projectId);
+  // Always schedule one idempotent tick: a new user message may have resolved
+  // the condition that paused the queue (question, approval, stale lock).
   setTimeout(() => {
     void autoStartNext(projectId);
   }, 1_000);
@@ -1404,7 +1691,16 @@ export async function autoStartAll(): Promise<void> {
   const rows = await db
     .select()
     .from(projects)
-    .where(inArray(projects.phase, ["coding", "testing", "deployment", "operations"]));
+    .where(
+      inArray(projects.phase, [
+        "requirements",
+        "design",
+        "coding",
+        "testing",
+        "deployment",
+        "operations",
+      ]),
+    );
   await Promise.all(rows.map((project) => autoStartNext(project.id)));
 }
 
@@ -1413,7 +1709,7 @@ async function nudgeAllPhaseGates(): Promise<void> {
   const rows = await db
     .select({ id: projects.id })
     .from(projects)
-    .where(inArray(projects.phase, ["design", "coding", "testing", "deployment"]));
+    .where(inArray(projects.phase, ["requirements", "design", "coding", "testing", "deployment"]));
   for (const row of rows) {
     await nudgePhaseProposal(row.id, "periodic_gate").catch((error) => {
       console.error("[auto-dev] phase gate nudge failed", error);
@@ -1567,9 +1863,17 @@ export function startAutoDevelopmentLoop(): void {
   // Give the service and its preview one startup window before the first
   // operations heartbeat, otherwise a restart can look like a health incident.
   setTimeout(heartbeat, 3 * 60_000).unref();
+  const queueWatchdog = () => {
+    try {
+      guardStaleQueues();
+    } catch (error) {
+      console.error("[auto-dev] queue watchdog failed", error);
+    }
+  };
   setInterval(() => {
     mergeReviewed();
     nudgeGates();
+    queueWatchdog();
     void autoStartAll();
   }, 20_000).unref();
   setInterval(heartbeat, 5 * 60_000).unref();
