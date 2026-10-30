@@ -132,6 +132,7 @@ function codeSystemPrompt(testCommand: string | null): string {
     "",
     "Rules:",
     "- Output exactly one JSON object. No markdown fences, no explanation, no plan, no multiple actions.",
+    "- Keep `thought` to one short sentence (max 200 characters). Never paste code, file contents, or observations into it.",
     "- Work only inside the worktree; use relative paths.",
     "- Inspect before editing; make small complete changes.",
     "- For an existing file you MUST use `edit` with an exact old snippet. `write` is only for new files; never rewrite an existing large file.",
