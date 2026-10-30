@@ -358,7 +358,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         break;
       }
       steps += 1;
-      const transcriptCap = Number(process.env.BUILTIN_TRANSCRIPT_MAX ?? 100_000);
+      const transcriptCap = Number(process.env.BUILTIN_TRANSCRIPT_MAX ?? 160_000);
       if (transcript.length > transcriptCap) {
         const head = Math.min(30_000, Math.floor(transcriptCap / 3));
         transcript = `${transcript.slice(0, head)}\n... earlier steps omitted ...\n${transcript.slice(
@@ -404,6 +404,13 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         continue;
       }
 
+      const mustEdit =
+        mutations === 0 && steps >= Math.max(8, Math.floor(maxSteps * 0.6));
+      if (mustEdit && ["read", "list", "run"].includes(action.type)) {
+        console.log(`[builtin] rejected ${action.type}: no edit yet at step ${steps}/${maxSteps}`);
+        transcript += `\n\nAction: ${action.type}\nObservation: rejected: you have used ${steps}/${maxSteps} steps without editing. Output a write or edit action now.`;
+        continue;
+      }
       toolCalls += 1;
       console.log(
         `[builtin] action=${action.type} target=${String(action.path ?? action.command ?? action.url ?? "").slice(0, 160)}`,
