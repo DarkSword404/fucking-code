@@ -175,6 +175,36 @@ line3"}}`,
 });
 
 describe("builtin JSON extraction", () => {
+  test("does not let a later code fence override the leading action", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-fence-"));
+    roots.push(root);
+    await writeFile(join(root, "note.txt"), "ok\n");
+
+    const gateway = new ScriptedGateway([
+      `{"thought":"finish","action":{"type":"done","summary":"fence did not win"}}
+
+Observation:
+\`\`\`js
+const notAnAction = { hello: "world" };
+\`\`\``,
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "fence",
+      taskDescription: "leading action wins",
+      acceptance: ["done"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 2,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(result.summary).toContain("fence did not win");
+  });
+
   test("ignores text appended after the action object", async () => {
     const root = await mkdtemp(join(tmpdir(), "fc-builtin-tail-"));
     roots.push(root);

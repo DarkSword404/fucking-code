@@ -71,43 +71,55 @@ function firstJsonObject(text: string): string | null {
 }
 
 function parseAction(text: string): ParsedAction {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  const candidate = (fenced?.[1] ?? text).trim();
-  const parse = (value: string): ParsedAction => {
+  /**
+   * Only accept an object that actually contains an `action` object. A later
+   * code fence may contain arbitrary JSON/prose; preferring the text's own
+   * first balanced object keeps a valid leading action from being discarded.
+   */
+  const parseCandidate = (value: string): ParsedAction | null => {
     const attempt = (raw: string): ParsedAction | null => {
       try {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         if (parsed.action && typeof parsed.action === "object") {
           return parsed as ParsedAction;
         }
-        return { action: parsed };
+        return null;
       } catch {
         return null;
       }
     };
     const direct = attempt(value);
     if (direct) return direct;
-    // Models routinely put raw newlines/quotes inside a large `content`
-    // string. Without repair a 70k write becomes an invalid action and the
-    // step is wasted; jsonrepair keeps the file content usable.
-    try {
-      const repaired = attempt(jsonrepair(value));
-      if (repaired) return repaired;
-    } catch {
-      // fall through
+    const first = firstJsonObject(value);
+    if (first) {
+      const parsed = attempt(first);
+      if (parsed) return parsed;
+      try {
+        const repaired = attempt(jsonrepair(first));
+        if (repaired) return repaired;
+      } catch {
+        // fall through
+      }
     }
-    return {};
+    // Last resort: repair the whole value (raw newlines inside content).
+    try {
+      return attempt(jsonrepair(value));
+    } catch {
+      return null;
+    }
   };
-  const direct = parse(candidate);
-  if (direct.action) return direct;
-  // Models sometimes append an observation or `<system>` block after the
-  // action. Slicing first-to-last brace then includes that trailing text and
-  // breaks JSON. Extract the first balanced object instead.
-  const first = firstJsonObject(candidate);
-  if (first) return parse(first);
+
+  const candidates = [text.trim()];
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    const body = (match[1] ?? "").trim();
+    if (body) candidates.push(body);
+  }
+  for (const candidate of candidates) {
+    const parsed = parseCandidate(candidate);
+    if (parsed) return parsed;
+  }
   return {};
 }
-
 function clip(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}\n... (truncated)` : value;
 }
