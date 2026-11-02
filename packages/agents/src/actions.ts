@@ -182,10 +182,12 @@ export async function applyActions(
         status: x.status,
         acceptanceRefs: x.acceptanceRefs,
         gateKey: x.gateKey,
+        iterationId: x.iterationId,
       })),
       approvals: ctx.bundle.approvals.map((x) => ({ targetType: x.targetType, status: x.status })),
       phaseEnteredAt: ctx.bundle.project.phaseEnteredAt,
       acceptanceIds: ctx.bundle.acceptanceIds,
+      iterationId: ctx.bundle.currentIteration?.id ?? null,
       targetCommit: ctx.bundle.currentIteration?.targetCommit ?? null,
     };
     const requirements = gateRequirementsForTransition(from, target, gateCtx);

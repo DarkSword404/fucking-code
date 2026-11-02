@@ -54,10 +54,12 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
       evidence: t.evidence,
       acceptanceRefs: t.acceptanceRefs,
       gateKey: t.gateKey,
+      iterationId: t.iterationId,
     })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     phaseEnteredAt: bundle.project.phaseEnteredAt,
     acceptanceIds: bundle.acceptanceIds,
+    iterationId: bundle.currentIteration?.id ?? null,
     targetCommit: bundle.currentIteration?.targetCommit ?? null,
   };
 

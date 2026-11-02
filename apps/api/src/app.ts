@@ -2588,10 +2588,12 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
         evidence: t.evidence,
         acceptanceRefs: t.acceptanceRefs,
         gateKey: t.gateKey,
+        iterationId: t.iterationId,
       })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
       phaseEnteredAt: project.phaseEnteredAt,
       acceptanceIds: bundle.acceptanceIds,
+      iterationId: bundle.currentIteration?.id ?? null,
       targetCommit: bundle.currentIteration?.targetCommit ?? null,
     });
     if (!transitionRequirements.every((r) => r.met)) {
@@ -2959,10 +2961,12 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
       evidence: t.evidence,
       acceptanceRefs: t.acceptanceRefs,
       gateKey: t.gateKey,
+      iterationId: t.iterationId,
     })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     phaseEnteredAt: project.phaseEnteredAt,
     acceptanceIds: bundle.acceptanceIds,
+    iterationId: bundle.currentIteration?.id ?? null,
     targetCommit: bundle.currentIteration?.targetCommit ?? null,
   };
   const requirements = gateRequirementsForTransition(from, to, gateCtx);

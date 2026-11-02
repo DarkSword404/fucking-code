@@ -234,6 +234,25 @@ describe("workflow gates", () => {
     expect(covered.find((r) => r.key === "scope_coverage")?.met).toBe(true);
   });
 
+  test("task gates ignore tasks from other iterations", () => {
+    const ctx = {
+      artifacts: [
+        { kind: "sca_report", status: "accepted", title: "SCA" },
+        { kind: "sast_report", status: "accepted", title: "SAST" },
+        { kind: "code_audit", status: "accepted", title: "Audit" },
+      ],
+      tasks: [
+        { status: "done", iterationId: "i1" },
+        { status: "ready", iterationId: "old" },
+        { status: "ready", iterationId: null },
+      ],
+      approvals: [],
+      iterationId: "i1",
+    };
+    const requirements = gateRequirements("coding", ctx);
+    expect(requirements.find((r) => r.key === "tasks_closed")?.met).toBe(true);
+  });
+
   test("coding waits for tasks and security evidence", () => {
     const open = gateRequirements("coding", {
       artifacts: [],
