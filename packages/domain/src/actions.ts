@@ -75,6 +75,8 @@ const proposeDecision = z.object({
 });
 
 const planTask = z.object({
+  /** Adopt an existing task instead of creating a duplicate. */
+  taskId: z.string().optional(),
   title: z.string().min(1).max(240),
   description: z.string().max(8000).default(""),
   role: roleKey,

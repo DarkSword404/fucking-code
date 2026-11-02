@@ -1804,9 +1804,7 @@ export async function autoStartNext(projectId: string): Promise<void> {
       .filter((task) => task.status === "ready")
       .filter(
         (task) =>
-          !project.currentIterationId ||
-          !task.iterationId ||
-          task.iterationId === project.currentIterationId,
+          !project.currentIterationId || task.iterationId === project.currentIterationId,
       )
       .filter(
         (task) =>

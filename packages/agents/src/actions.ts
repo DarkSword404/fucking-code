@@ -646,12 +646,15 @@ export async function applyActions(
             .from(tasks)
             .where(eq(tasks.projectId, ctx.bundle.project.id));
           const byTitle = new Map(currentTasks.map((task) => [task.title, task]));
+          const byId = new Map(currentTasks.map((task) => [task.id, task]));
           const created: Array<{ id: string; title: string }> = [];
           for (const spec of a.tasks) {
             const acceptanceRefs = (spec.acceptanceRefs ?? [])
               .map(normalizeAcceptanceId)
               .filter((id): id is string => Boolean(id));
-            const existingTask = byTitle.get(spec.title);
+            const existingTask = spec.taskId
+              ? byId.get(spec.taskId)
+              : byTitle.get(spec.title);
             if (existingTask) {
               // Adopt a legacy/ad-hoc task into this iteration instead of
               // creating a duplicate with the same title.
