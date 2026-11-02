@@ -342,7 +342,7 @@ async function nudgeStuckTasks(projectId: string, stuck: TaskRow[]): Promise<voi
       return `- [${task.status}] ${task.title}：${reason.slice(0, 220)}`;
     });
     const content = [
-      "编码队列当前没有 ready 任务，但有任务卡住：",
+      "自动开发当前没有启动任务，但队列里有任务卡住：",
       ...lines,
       "",
       `请 ${triageName} 在团队内部处理：取消、返工、拆分或新建任务；工程事项不要问甲方。`,
@@ -1527,6 +1527,35 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
 }
 
 /**
+ * A Lead message that says "cancel/hold/park" is not a state change. If the
+ * last human-facing word is a global hold and the tasks are still `ready`, do
+ * not start them; surface the mismatch instead. The hold expires so a model
+ * that never emits update_task cannot freeze the project forever.
+ */
+async function hasRecentLeadHold(projectId: string): Promise<boolean> {
+  const rows = await getDb()
+    .select({
+      senderType: messages.senderType,
+      senderName: messages.senderName,
+      content: messages.content,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .where(eq(messages.projectId, projectId))
+    .orderBy(desc(messages.seq))
+    .limit(8);
+  for (const row of rows) {
+    if (row.senderType === "user") return false;
+    if (row.senderName !== "Lead") continue;
+    if (Date.now() - row.createdAt.getTime() > 10 * 60_000) return false;
+    return /都取消|全取消|全部取消|挂账|暂停|先别|不要再开|不推进|停止开单/.test(
+      row.content,
+    );
+  }
+  return false;
+}
+
+/**
  * Pick the next ready task in a build-phase project, respecting dependencies
  * and one running workspace per project. The scheduler is intentionally
  * idempotent; the periodic loop and event hooks may both call it.
@@ -1696,6 +1725,26 @@ export async function autoStartNext(projectId: string): Promise<void> {
         .from(tasks)
         .where(eq(tasks.projectId, projectId))
         .orderBy(asc(tasks.createdAt));
+    }
+
+    if (await hasRecentLeadHold(projectId)) {
+      await noticeOnce(
+        project,
+        room.id,
+        "lead_hold",
+        5 * 60_000,
+        "Lead 最近声明了暂停/取消/挂账，但队列里的任务仍是 ready。自动开发暂不启动新任务；请 Lead 用 update_task 按 taskId 落状态，或由甲方发消息解除。",
+        {},
+      ).catch(() => undefined);
+      // Surface the word/action mismatch to the Lead in a bounded turn instead
+      // of silently waiting for the ten-minute expiry.
+      const readyNow = taskRows.filter((task) => task.status === "ready");
+      if (readyNow.length) {
+        void nudgeStuckTasks(projectId, readyNow).catch((error) => {
+          console.error("[auto-dev] lead hold nudge failed", error);
+        });
+      }
+      return;
     }
 
     let candidate: TaskRow | undefined;
