@@ -83,12 +83,13 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
       // phase transition; it is far shorter than a stale iteration.
       return new Date(artifact.updatedAt).getTime() >= phaseStarted - 5 * 60_000;
     });
-  // A plan/design written before the latest PRD or acceptance revision is
-  // stale: the scope may have grown (for example a new v1.1 dashboard/admin
-  // requirement) while the old plan still satisfies the gate. That lets the
-  // team enter coding with no tasks for the new scope.
+  // A plan/design written before the latest PRD is stale: the scope may have
+  // grown (for example a new v1.1 dashboard/admin requirement) while the old
+  // plan still satisfies the gate. Acceptance-detail revisions made during
+  // design/implementation must not invalidate the plan on every batch; the
+  // PRD is the scope anchor.
   const latestSpecAt = ctx.artifacts
-    .filter((artifact) => artifact.kind === "prd" || artifact.kind === "acceptance_criteria")
+    .filter((artifact) => artifact.kind === "prd")
     .reduce((latest, artifact) => {
       if (!artifact.updatedAt) return latest;
       return Math.max(latest, new Date(artifact.updatedAt).getTime());
@@ -140,7 +141,7 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
         },
         {
           key: "plan_accepted",
-          label: "实施计划已生成并内部接受（须覆盖最新 PRD/验收标准）",
+          label: "实施计划已生成并内部接受（须覆盖最新 PRD 范围）",
           met: hasAcceptedForSpec("plan"),
         },
         { key: "has_tasks", label: "至少拆出 1 个可执行任务", met: ctx.tasks.length > 0 },
