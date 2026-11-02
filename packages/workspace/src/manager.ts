@@ -49,6 +49,14 @@ const ALLOWED_COMMANDS = new Set([
   "pytest",
   "uv",
   "poetry",
+  // Read-only inspection commands. Agents repeatedly needed these to quote
+  // source snippets; without them they tried `node -e spawnSync(...)`, which
+  // the metacharacter guard rejects, and looped.
+  "grep",
+  "rg",
+  "wc",
+  "head",
+  "tail",
 ]);
 const SAFE_GIT_COMMANDS = new Set([
   "status",

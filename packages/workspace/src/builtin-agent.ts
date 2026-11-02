@@ -210,6 +210,7 @@ function workbenchSystemPrompt(): string {
     "- Output exactly one JSON object. No markdown fences, no explanation, no multiple actions.",
     "- This is a read-only verification. Do not modify product code. Evidence and reports may only be written under docs/ or qa-evidence/.",
     "- Use the provided preview URL first. Do not start a second app instance unless the preview is broken; if you must, use a random PORT and stop it afterwards.",
+    "- For source inspection use `grep`, `rg`, `head`, `tail` or `wc` directly; they are allowed and read-only.",
     "- Every conclusion needs evidence: command output, HTTP status/body, browser snapshot, or screenshot path. Never guess a pass.",
     "- For login, use the provided test account; never write the password into the report.",
     "- Uncovered checks must be labeled 未覆盖/无法执行.",
