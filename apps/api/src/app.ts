@@ -74,7 +74,9 @@ import {
   canTransitionPhase,
   canTransitionTask,
   gateRequirementsForTransition,
+  missingAcceptanceCoverage,
   nextPhase,
+  normalizeAcceptanceId,
   phaseIndex,
   uuidv7,
 } from "@devteam/domain";
@@ -2770,6 +2772,141 @@ app.all("/preview/:token/*", async (c) => {
 
 app.get("/preview/:token", async (c) => {
   return c.redirect(`/preview/${c.req.param("token")}/`);
+});
+
+const publishIterationSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  scope: z.array(z.string().max(20)).min(1).max(100),
+  baseCommit: z.string().max(80).optional(),
+  targetCommit: z.string().max(80).optional(),
+  tasks: z
+    .array(
+      z.object({
+        taskId: z.string().uuid(),
+        acceptanceRefs: z.array(z.string().max(20)).min(1).max(20),
+      }),
+    )
+    .min(1)
+    .max(60),
+});
+
+/**
+ * Publish one delivery iteration atomically: scope + adopted tasks + AC refs.
+ * This is the deterministic counterpart to the agent `publish_plan` action and
+ * the migration path for projects that predate iterations.
+ */
+app.post("/api/v1/projects/:projectId/iterations", async (c) => {
+  const user = c.get("user");
+  const { project } = await requireProjectEditor(c);
+  const body = publishIterationSchema.parse(await c.req.json());
+  const db = getDb();
+  const scope = [
+    ...new Set(
+      body.scope
+        .map(normalizeAcceptanceId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const taskRefs = body.tasks.map((task) => ({
+    taskId: task.taskId,
+    acceptanceRefs: [
+      ...new Set(
+        task.acceptanceRefs
+          .map(normalizeAcceptanceId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ],
+  }));
+  const missing = missingAcceptanceCoverage(
+    scope,
+    taskRefs.map((task) => ({ status: "ready", acceptanceRefs: task.acceptanceRefs })),
+  );
+  if (missing.length) {
+    throw new HttpError(
+      422,
+      "SCOPE_NOT_COVERED",
+      `Every AC in scope needs a task: ${missing.join(", ")}`,
+      { missing },
+    );
+  }
+  const taskRows = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.projectId, project.id),
+        inArray(tasks.id, taskRefs.map((task) => task.taskId)),
+      ),
+    );
+  if (taskRows.length !== taskRefs.length) {
+    throw new HttpError(404, "TASK_NOT_FOUND", "One or more tasks do not belong to this project.");
+  }
+  const [existing] = await db
+    .select()
+    .from(iterations)
+    .where(and(eq(iterations.projectId, project.id), eq(iterations.name, body.name)))
+    .limit(1);
+  const iterationId = existing?.id ?? uuidv7();
+  if (existing) {
+    await db
+      .update(iterations)
+      .set({
+        scope,
+        baseCommit: body.baseCommit ?? existing.baseCommit,
+        targetCommit: body.targetCommit ?? existing.targetCommit,
+        status: "planning",
+        updatedAt: new Date(),
+      })
+      .where(eq(iterations.id, iterationId));
+  } else {
+    await db.insert(iterations).values({
+      id: iterationId,
+      tenantId: project.tenantId,
+      projectId: project.id,
+      name: body.name,
+      status: "planning",
+      baseCommit: body.baseCommit ?? null,
+      targetCommit: body.targetCommit ?? null,
+      scope,
+    });
+  }
+  for (const ref of taskRefs) {
+    await db
+      .update(tasks)
+      .set({ iterationId, acceptanceRefs: ref.acceptanceRefs, updatedAt: new Date() })
+      .where(and(eq(tasks.id, ref.taskId), eq(tasks.projectId, project.id)));
+  }
+  await db
+    .update(projects)
+    .set({
+      currentIterationId: iterationId,
+      updatedAt: new Date(),
+      version: project.version + 1,
+    })
+    .where(eq(projects.id, project.id));
+  await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.projectChanged, {
+    action: "iteration_published",
+    iterationId,
+    name: body.name,
+    scope,
+    taskCount: taskRefs.length,
+  });
+  await audit({
+    tenantId: project.tenantId,
+    projectId: project.id,
+    actorType: "user",
+    actorId: user.id,
+    action: "iteration.published",
+    targetType: "iteration",
+    targetId: iterationId,
+    detail: { name: body.name, scope, taskIds: taskRefs.map((task) => task.taskId) },
+  });
+  const [iteration] = await db
+    .select()
+    .from(iterations)
+    .where(eq(iterations.id, iterationId))
+    .limit(1);
+  return c.json({ iteration, coverage: { scope, missingTasks: [] } }, 201);
 });
 
 // ---------------------------------------------------------------------------
