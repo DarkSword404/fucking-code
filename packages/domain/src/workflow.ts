@@ -238,6 +238,13 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
           label: "所有编码任务已完成或取消",
           met: tasksInScope.length > 0 && openCodeTasks.length === 0,
         },
+        {
+          key: "scope_coverage",
+          label: "每条验收标准仍有对应任务",
+          met:
+            !ctx.acceptanceIds?.length ||
+            missingAcceptanceCoverage(ctx.acceptanceIds, tasksInScope).length === 0,
+        },
         { key: "sca", label: "SCA 依赖扫描已完成", met: hasAccepted("sca_report") },
         { key: "sast", label: "SAST 静态扫描已完成", met: hasAccepted("sast_report") },
         { key: "code_audit", label: "代码安全审计已完成", met: hasAccepted("code_audit") },
