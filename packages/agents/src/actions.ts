@@ -8,6 +8,7 @@ import {
   approvals,
   captureAcceptedSpec,
   decisions,
+  insertMessage,
   memories,
   projects,
   tasks,
@@ -413,6 +414,63 @@ export async function applyActions(
               kind: a.kind,
               title: a.title,
             });
+          }
+          // A new PRD/acceptance revision is a scope change. If it arrives
+          // after planning, go back to design and invalidate the old plan;
+          // otherwise the team enters coding with no tasks for the new scope.
+          if (a.kind === "prd" || a.kind === "acceptance_criteria") {
+            const [fresh] = await db
+              .select({ phase: projects.phase, version: projects.version })
+              .from(projects)
+              .where(eq(projects.id, ctx.bundle.project.id))
+              .limit(1);
+            if (
+              fresh &&
+              ["coding", "testing", "deployment", "operations"].includes(fresh.phase)
+            ) {
+              await db
+                .update(projects)
+                .set({
+                  phase: "design",
+                  phaseEnteredAt: now(),
+                  updatedAt: now(),
+                  version: fresh.version + 1,
+                })
+                .where(eq(projects.id, ctx.bundle.project.id));
+              await ctx.emit(EVENT_TYPES.phaseChanged, {
+                from: fresh.phase,
+                to: "design",
+                by: ctx.actorRole.key,
+                reason: "spec_change_replan",
+                artifactKind: a.kind,
+              });
+              const messageId = uuidv7();
+              await insertMessage({
+                id: messageId,
+                tenantId: ctx.bundle.project.tenantId,
+                projectId: ctx.bundle.project.id,
+                roomId: ctx.bundle.room.id,
+                senderType: "system",
+                senderName: "系统",
+                type: "system_event",
+                content: `检测到 ${a.kind} 变更：「${a.title}」。项目已自动回到 design 重新规划；旧 plan/design 不再满足门禁，必须先产出覆盖新范围的新计划，才能回到 coding。`,
+                metadata: {
+                  kind: "spec_change_replan",
+                  from: fresh.phase,
+                  artifactKind: a.kind,
+                },
+              });
+              await ctx.emit(EVENT_TYPES.messageCreated, {
+                messageId,
+                roomId: ctx.bundle.room.id,
+                senderType: "system",
+                senderName: "系统",
+                type: "system_event",
+              });
+              result.notes.push(
+                `phase reset to design: ${a.kind} changed scope during ${fresh.phase}`,
+              );
+            }
           }
           break;
         }
