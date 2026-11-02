@@ -144,6 +144,41 @@ describe("builtin edit action", () => {
   });
 });
 
+describe("builtin action batching", () => {
+  test("executes up to three independent read actions from one model turn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fc-builtin-batch-"));
+    roots.push(root);
+    await writeFile(join(root, "a.txt"), "alpha\n");
+    await writeFile(join(root, "b.txt"), "beta\n");
+
+    const gateway = new ScriptedGateway([
+      JSON.stringify({
+        actions: [
+          { type: "read", path: "a.txt" },
+          { type: "read", path: "b.txt" },
+        ],
+      }),
+      JSON.stringify({ action: { type: "done", summary: "batched reads" } }),
+    ]);
+
+    const result = await runBuiltinAgent({
+      root,
+      taskTitle: "batch",
+      taskDescription: "read two files in one turn",
+      acceptance: ["done"],
+      specText: "",
+      model: { providerID: "test", id: "test" },
+      gateway,
+      maxSteps: 4,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(result.toolCalls).toBe(3);
+    expect(result.summary).toContain("batched reads");
+  });
+});
+
 describe("builtin JSON repair", () => {
   test("executes a write whose content contains raw newlines", async () => {
     const root = await mkdtemp(join(tmpdir(), "fc-builtin-raw-"));

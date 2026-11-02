@@ -146,6 +146,42 @@ function parseAction(text: string): ParsedAction {
   if (dsml) return dsml;
   return {};
 }
+/**
+ * Accept both the single-action contract and a small `actions` batch. The
+ * batch exists to cut model round-trips (three independent reads in one turn)
+ * without letting a model perform several writes before seeing results.
+ */
+function parseActions(text: string): ParsedAction[] {
+  const single = parseAction(text);
+  if (single.action) return [single];
+  const candidates = [firstJsonObject(text), text.trim()];
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    candidates.push((match[1] ?? "").trim());
+  }
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    for (const value of [candidate, (() => { try { return jsonrepair(candidate); } catch { return ""; } })()]) {
+      if (!value) continue;
+      try {
+        const parsed = JSON.parse(value) as Record<string, unknown>;
+        if (Array.isArray(parsed.actions)) {
+          return parsed.actions
+            .filter(
+              (item): item is Record<string, unknown> & { type: string } =>
+                Boolean(item) &&
+                typeof item === "object" &&
+                typeof (item as { type?: unknown }).type === "string",
+            )
+            .map((item) => ({ action: item as ParsedAction["action"] }));
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  return [];
+}
+
 function clip(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}\n... (truncated)` : value;
 }
@@ -163,6 +199,8 @@ function codeSystemPrompt(testCommand: string | null): string {
     "Reply with exactly one JSON object per turn, no markdown fences:",
     '{"thought":"...","action":{"type":"list"}}',
     '{"thought":"...","action":{"type":"read","path":"relative/path"}}',
+    '{"actions":[{"type":"read","path":"a"},{"type":"run","command":"grep ..."}]}',
+    '{"actions":[{"type":"read","path":"a.js"},{"type":"read","path":"b.js"}]}',
     '{"thought":"...","action":{"type":"write","path":"relative/path","content":"full file content"}}',
     '{"thought":"...","action":{"type":"edit","path":"relative/path","old":"exact existing snippet","new":"replacement"}}',
     '{"thought":"...","action":{"type":"run","command":"npm test"}}',
@@ -171,6 +209,7 @@ function codeSystemPrompt(testCommand: string | null): string {
     "Rules:",
     "- Output exactly one JSON object. No markdown fences, no explanation, no plan, no multiple actions.",
     "- Keep `thought` to one short sentence (max 200 characters). Never paste code, file contents, or observations into it.",
+    "- You may batch up to 3 independent read/list/run actions in one `actions` array to save round-trips; never batch writes or edits.",
     "- Work only inside the worktree; use relative paths.",
     "- Inspect before editing; make small complete changes.",
     "- For an existing file you MUST use `edit` with an exact old snippet. `write` is only for new files; never rewrite an existing large file.",
@@ -211,6 +250,7 @@ function workbenchSystemPrompt(): string {
     "- This is a read-only verification. Do not modify product code. Evidence and reports may only be written under docs/ or qa-evidence/.",
     "- Use the provided preview URL first. Do not start a second app instance unless the preview is broken; if you must, use a random PORT and stop it afterwards.",
     "- For source inspection use `grep`, `rg`, `head`, `tail` or `wc` directly; they are allowed and read-only.",
+    "- You may batch up to 3 independent read/list/run actions in one `actions` array; never batch writes.",
     "- `fetch` runs on the host and can reach the preview; commands run inside the container and see only the container network. Do not use `ss`/`curl` for host-port evidence; use `fetch`.",
     "- Every conclusion needs evidence: command output, HTTP status/body, browser snapshot, or screenshot path. Never guess a pass.",
     "- For login, use the provided test account; never write the password into the report.",
@@ -344,6 +384,7 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
   let toolCalls = 0;
   let steps = 0;
   let mutations = 0;
+  let pending: ParsedAction[] = [];
   let outcome: BuiltinAgentResult["outcome"] = "failed";
   let browserSession: BrowserSession | null = null;
 
@@ -359,50 +400,63 @@ export async function runBuiltinAgent(input: BuiltinAgentInput): Promise<Builtin
         outcome = "timeout";
         break;
       }
-      steps += 1;
-      const transcriptCap = Number(process.env.BUILTIN_TRANSCRIPT_MAX ?? 160_000);
-      if (transcript.length > transcriptCap) {
-        const head = Math.min(30_000, Math.floor(transcriptCap / 3));
-        transcript = `${transcript.slice(0, head)}\n... earlier steps omitted ...\n${transcript.slice(
-          -(transcriptCap - head - 40),
-        )}`;
-      }
-      if (mutations === 0 && steps >= Math.max(4, Math.floor(maxSteps / 2))) {
-        transcript += `\n\nObservation: You have used ${steps}/${maxSteps} steps without editing. Stop reading and make the smallest necessary edit now.`;
-      }
+      let action: ParsedAction["action"] | undefined;
+      let text = "";
+      if (pending.length) {
+        action = pending.shift()!.action;
+      } else {
+        steps += 1;
+        const transcriptCap = Number(process.env.BUILTIN_TRANSCRIPT_MAX ?? 120_000);
+        if (transcript.length > transcriptCap) {
+          const head = Math.min(24_000, Math.floor(transcriptCap / 3));
+          transcript = `${transcript.slice(0, head)}\n... earlier steps omitted ...\n${transcript.slice(
+            -(transcriptCap - head - 40),
+          )}`;
+        }
+        if (mutations === 0 && steps >= Math.max(4, Math.floor(maxSteps / 2))) {
+          transcript += `\n\nObservation: You have used ${steps}/${maxSteps} steps without editing. Stop reading and make the smallest necessary edit now.`;
+        }
 
-      // A single long generation (large patch, long file) can legitimately take
-      // minutes. The per-call cap must not be shorter than the task budget, or
-      // healthy work dies as a fake "channel timeout".
-      const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
-      const callStarted = Date.now();
-      // The gateway flattens system+prompt into one message, so the system
-      // rule is far from the generation point. Repeat the output contract at
-      // the end; otherwise models drift into narrating "Action:"/"Observation:".
-      const prompt = `${transcript}\n\n---\nReply now with exactly one JSON object (no markdown, no "Action:" / "Observation:" prose).`;
-      const text = await generateWithRetry(
-        gateway,
-        {
-          system,
-          prompt,
-          model: input.model,
-          signal: input.signal,
-          timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
-        },
-        deadline,
-      );
-      console.log(
-        `[builtin] task=${input.taskTitle.slice(0, 12).replace(/\s+/g, "_")} step=${steps} prompt=${transcript.length} out=${text.length} ms=${Date.now() - callStarted}`,
-      );
-      const parsed = parseAction(text);
-      const action = parsed.action;
-      if (!action || typeof action.type !== "string") {
-        const dump = `/tmp/fc-invalid-action-${process.pid}-${steps}.txt`;
-        await writeFile(dump, text).catch(() => undefined);
-        console.error(
-          `[builtin] invalid action step=${steps} len=${text.length} dump=${dump} head=${text.slice(0, 160).replace(/\s+/g, " ")} tail=${text.slice(-160).replace(/\s+/g, " ")}`,
+        // A single long generation (large patch, long file) can legitimately
+        // take minutes. The per-call cap must not be shorter than the task
+        // budget, or healthy work dies as a fake "channel timeout".
+        const callTimeoutMs = Number(process.env.MODEL_CALL_TIMEOUT_MS ?? 300_000);
+        const callStarted = Date.now();
+        const prompt = `${transcript}\n\n---\nReply now with exactly one JSON object (or an {"actions":[...]} batch of independent read/list/run actions). No markdown, no "Action:" / "Observation:" prose.`;
+        text = await generateWithRetry(
+          gateway,
+          {
+            system,
+            prompt,
+            model: input.model,
+            signal: input.signal,
+            timeoutMs: Math.max(10_000, Math.min(callTimeoutMs, deadline - Date.now())),
+          },
+          deadline,
         );
-        transcript += `\n\nAssistant: ${clip(text, 2000)}\nObservation: invalid action JSON. Reply with exactly one action object, no markdown or explanation.`;
+        console.log(
+          `[builtin] task=${input.taskTitle.slice(0, 12).replace(/\s+/g, "_")} step=${steps} prompt=${transcript.length} out=${text.length} ms=${Date.now() - callStarted}`,
+        );
+        const parsedActions = parseActions(text);
+        if (!parsedActions.length) {
+          const dump = `/tmp/fc-invalid-action-${process.pid}-${steps}.txt`;
+          await writeFile(dump, text).catch(() => undefined);
+          console.error(
+            `[builtin] invalid action step=${steps} len=${text.length} dump=${dump} head=${text.slice(0, 160).replace(/\s+/g, " ")} tail=${text.slice(-160).replace(/\s+/g, " ")}`,
+          );
+          transcript += `\n\nAssistant: ${clip(text, 2000)}\nObservation: invalid action JSON. Reply with one action object or a small {"actions":[...]} batch.`;
+          continue;
+        }
+        const first = parsedActions.shift()!;
+        action = first.action;
+        // Only batch independent read/list/run actions; writes and edits stay
+        // one per model round so the next decision sees their result.
+        pending = parsedActions
+          .filter((item) => ["read", "list", "run"].includes(String(item.action?.type)))
+          .slice(0, 2);
+      }
+      if (!action || typeof action.type !== "string") {
+        transcript += `\n\nAssistant: ${clip(text, 2000)}\nObservation: invalid action JSON. Reply with one action object.`;
         continue;
       }
 
