@@ -24,7 +24,7 @@ export const ACTION_PROTOCOL = `
 \`\`\`devteam
 {"actions":[
   {"type":"create_artifact","kind":"prd","title":"...","summary":"一句话摘要","content":"完整 Markdown 内容"},
-  {"type":"publish_plan","name":"v1.1","scope":["AC22","AC29"],"baseCommit":"...","tasks":[{"title":"...","description":"...","role":"frontend","mode":"code","acceptanceRefs":["AC29"],"acceptance":["可验证的标准"]}]},
+  {"type":"publish_plan","name":"v1.1","scope":["AC22","AC29"],"baseCommit":"...","tasks":[{"taskId":"可选：接管已有任务","title":"...","description":"...","role":"frontend","mode":"code","acceptanceRefs":["AC29"],"acceptance":["可验证的标准"]}]},
   {"type":"create_task","title":"...","description":"...","role":"frontend","mode":"code","priority":"medium","acceptanceRefs":["AC22"],"acceptance":["可验证的标准"]},
   {"type":"update_task","taskTitle":"...","status":"done","evidence":"证据说明"},
   {"type":"propose_decision","title":"...","rationale":"...","alternatives":["备选方案"]},

@@ -435,6 +435,17 @@ export class Orchestrator {
     const lead = bundle.roles.find((role) => role.key === "lead" && role.enabled);
     if (!lead) return null;
 
+    // A published iteration already has its task graph. Re-extracting the
+    // plan here would create a second set of near-duplicate tasks; replanning
+    // must go through publish_plan instead.
+    if (bundle.currentIteration) {
+      const existing = bundle.tasks.filter(
+        (task) =>
+          task.iterationId === bundle.currentIteration?.id && task.status !== "cancelled",
+      );
+      if (existing.length) return null;
+    }
+
     const spec = await captureAcceptedSpec(bundle.project.id);
     if (!spec) {
       const messageId = uuidv7();
