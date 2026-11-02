@@ -197,6 +197,17 @@ function Workspace() {
           </div>
           <Show when={snap() && !isAdminView()}>
             <span class="badge phase-badge">{PHASE_LABELS[snap()!.project.phase]}</span>
+            <Show when={snap()?.currentIteration}>
+              <span
+                class="badge"
+                title={`迭代 ${snap()!.currentIteration!.name}；目标提交 ${snap()!.currentIteration!.targetCommit ?? "未设置"}`}
+              >
+                {snap()!.currentIteration!.name}
+                {snap()!.currentIteration!.targetCommit
+                  ? ` · ${snap()!.currentIteration!.targetCommit!.slice(0, 8)}`
+                  : ""}
+              </span>
+            </Show>
             <Show when={previewMeta()}>
               <span
                 class="badge"
