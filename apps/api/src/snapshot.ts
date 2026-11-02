@@ -34,9 +34,15 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
     .limit(20);
 
   const gateCtx = {
-    artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+    artifacts: bundle.artifacts.map((a) => ({
+      kind: a.kind,
+      status: a.status,
+      title: a.title,
+      updatedAt: a.updatedAt,
+    })),
     tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+    phaseEnteredAt: bundle.project.phaseEnteredAt,
   };
 
   const [cursorRow] = await db

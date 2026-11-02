@@ -50,9 +50,20 @@ export const PHASE_DESCRIPTIONS: Record<WorkflowPhase, string> = {
 };
 
 export type PhaseGateContext = {
-  artifacts: Array<{ kind: string; status: string; title: string }>;
+  artifacts: Array<{
+    kind: string;
+    status: string;
+    title: string;
+    updatedAt?: Date | string | null;
+  }>;
   tasks: Array<{ status: string; id?: string; evidence?: Record<string, unknown> | null }>;
   approvals: Array<{ targetType: string; status: string }>;
+  /**
+   * Evidence must belong to the current phase. Without this, an old accepted
+   * test report or release check from a previous iteration can satisfy a new
+   * gate and let the project race to operations without doing the work.
+   */
+  phaseEnteredAt?: Date | string | null;
 };
 
 export interface GateRequirement {
@@ -63,8 +74,15 @@ export interface GateRequirement {
 
 /** Requirements that must be satisfied before leaving `phase`. */
 export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): GateRequirement[] {
+  const phaseStarted = ctx.phaseEnteredAt ? new Date(ctx.phaseEnteredAt).getTime() : 0;
   const hasAccepted = (kind: string) =>
-    ctx.artifacts.some((a) => a.kind === kind && a.status === "accepted");
+    ctx.artifacts.some((artifact) => {
+      if (artifact.kind !== kind || artifact.status !== "accepted") return false;
+      if (!phaseStarted || !artifact.updatedAt) return true;
+      // A small grace window covers evidence created in the same turn as the
+      // phase transition; it is far shorter than a stale iteration.
+      return new Date(artifact.updatedAt).getTime() >= phaseStarted - 5 * 60_000;
+    });
   // A failed task that has already produced a defect successor is superseded:
   // the successor carries the rework, so the old task must not hold the gate
   // open forever. Explicit `supersededBy` markers are treated the same way.

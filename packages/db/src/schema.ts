@@ -95,6 +95,8 @@ export const projects = pgTable(
     slug: text("slug").notNull(),
     description: text("description").notNull().default(""),
     phase: text("phase").notNull().default("requirements"),
+    /** When the current phase was entered; gates only accept fresh evidence. */
+    phaseEnteredAt: timestamp("phase_entered_at", { withTimezone: true }).notNull().defaultNow(),
     status: text("status").notNull().default("active"),
     repoUrl: text("repo_url"),
     repoPath: text("repo_path"),

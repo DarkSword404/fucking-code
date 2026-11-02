@@ -2571,9 +2571,15 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
     const bundle = await loadRoomBundle(project.id, (await roomFor(project)).id, 0);
     if (!bundle) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
     transitionRequirements = gateRequirementsForTransition(from, phaseTarget, {
-      artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+      artifacts: bundle.artifacts.map((a) => ({
+        kind: a.kind,
+        status: a.status,
+        title: a.title,
+        updatedAt: a.updatedAt,
+      })),
       tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+      phaseEnteredAt: project.phaseEnteredAt,
     });
     if (!transitionRequirements.every((r) => r.met)) {
       throw new HttpError(
@@ -2604,7 +2610,12 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
   if (body.status === "approved" && phaseTarget) {
     const [updatedProject] = await db
       .update(projects)
-      .set({ phase: phaseTarget, updatedAt: new Date(), version: project.version + 1 })
+      .set({
+        phase: phaseTarget,
+        phaseEnteredAt: new Date(),
+        updatedAt: new Date(),
+        version: project.version + 1,
+      })
       .where(eq(projects.id, project.id))
       .returning();
     if (!updatedProject) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
@@ -2772,9 +2783,15 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
   const bundle = await loadRoomBundle(project.id, (await roomFor(project)).id, 0);
   if (!bundle) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");
   const gateCtx = {
-    artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+    artifacts: bundle.artifacts.map((a) => ({
+      kind: a.kind,
+      status: a.status,
+      title: a.title,
+      updatedAt: a.updatedAt,
+    })),
     tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+    phaseEnteredAt: project.phaseEnteredAt,
   };
   const requirements = gateRequirementsForTransition(from, to, gateCtx);
 
@@ -2790,7 +2807,12 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
   const db = getDb();
   const [updated] = await db
     .update(projects)
-    .set({ phase: to, updatedAt: new Date(), version: project.version + 1 })
+    .set({
+      phase: to,
+      phaseEnteredAt: new Date(),
+      updatedAt: new Date(),
+      version: project.version + 1,
+    })
     .where(eq(projects.id, project.id))
     .returning();
   if (!updated) throw new HttpError(404, "PROJECT_NOT_FOUND", "Project not found.");

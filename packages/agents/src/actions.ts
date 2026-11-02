@@ -156,9 +156,15 @@ export async function applyActions(
       return;
     }
     const gateCtx = {
-      artifacts: ctx.bundle.artifacts.map((x) => ({ kind: x.kind, status: x.status, title: x.title })),
+      artifacts: ctx.bundle.artifacts.map((x) => ({
+        kind: x.kind,
+        status: x.status,
+        title: x.title,
+        updatedAt: x.updatedAt,
+      })),
       tasks: ctx.bundle.tasks.map((x) => ({ status: x.status })),
       approvals: ctx.bundle.approvals.map((x) => ({ targetType: x.targetType, status: x.status })),
+      phaseEnteredAt: ctx.bundle.project.phaseEnteredAt,
     };
     const requirements = gateRequirementsForTransition(from, target, gateCtx);
     if (!requirements.every((r) => r.met)) {
@@ -173,7 +179,12 @@ export async function applyActions(
     const proposalReason = reason.trim() || "AI 判断当前阶段可以继续推进。";
     await db
       .update(projects)
-      .set({ phase: target, updatedAt: new Date(), version: nextVersion })
+      .set({
+        phase: target,
+        phaseEnteredAt: new Date(),
+        updatedAt: new Date(),
+        version: nextVersion,
+      })
       .where(eq(projects.id, ctx.bundle.project.id));
     ctx.bundle.project.phase = target;
     ctx.bundle.project.version = nextVersion;

@@ -509,9 +509,15 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       return;
     }
     const requirements = gateRequirementsForTransition(from, next, {
-      artifacts: bundle.artifacts.map((a) => ({ kind: a.kind, status: a.status, title: a.title })),
+      artifacts: bundle.artifacts.map((a) => ({
+        kind: a.kind,
+        status: a.status,
+        title: a.title,
+        updatedAt: a.updatedAt,
+      })),
       tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
+      phaseEnteredAt: bundle.project.phaseEnteredAt,
     });
     if (!requirements.every((r) => r.met)) {
       // Idle is not an error: the scheduler has no ready work because a gate is
