@@ -480,15 +480,6 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
     // pending-decision check so they cannot block the gate forever.
     await acceptLegacyInReviewArtifacts(projectId);
     if (await hasPendingDecisions(projectId)) return;
-    // Ready work is the scheduler's job; a simultaneous gate turn would race
-    // it and add noise. Only nudge when the queue is genuinely empty.
-    const [readyWork] = await db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.projectId, projectId), eq(tasks.status, "ready")))
-      .limit(1);
-    if (readyWork) return;
-
     const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
     if (!room || roomQueue.isRunning(room.id)) return;
     const workspaceRows = await db
@@ -1561,35 +1552,6 @@ export async function mergeInternallyReviewedTasks(projectId?: string): Promise<
 }
 
 /**
- * A Lead message that says "cancel/hold/park" is not a state change. If the
- * last human-facing word is a global hold and the tasks are still `ready`, do
- * not start them; surface the mismatch instead. The hold expires so a model
- * that never emits update_task cannot freeze the project forever.
- */
-async function hasRecentLeadHold(projectId: string): Promise<boolean> {
-  const rows = await getDb()
-    .select({
-      senderType: messages.senderType,
-      senderName: messages.senderName,
-      content: messages.content,
-      createdAt: messages.createdAt,
-    })
-    .from(messages)
-    .where(eq(messages.projectId, projectId))
-    .orderBy(desc(messages.seq))
-    .limit(8);
-  for (const row of rows) {
-    if (row.senderType === "user") return false;
-    if (row.senderName !== "Lead") continue;
-    if (Date.now() - row.createdAt.getTime() > 10 * 60_000) return false;
-    return /都取消|全取消|全部取消|挂账|暂停|先别|不要再开|不推进|停止开单/.test(
-      row.content,
-    );
-  }
-  return false;
-}
-
-/**
  * Pick the next ready task in a build-phase project, respecting dependencies
  * and one running workspace per project. The scheduler is intentionally
  * idempotent; the periodic loop and event hooks may both call it.
@@ -1759,26 +1721,6 @@ export async function autoStartNext(projectId: string): Promise<void> {
         .from(tasks)
         .where(eq(tasks.projectId, projectId))
         .orderBy(asc(tasks.createdAt));
-    }
-
-    if (await hasRecentLeadHold(projectId)) {
-      await noticeOnce(
-        project,
-        room.id,
-        "lead_hold",
-        5 * 60_000,
-        "Lead 最近声明了暂停/取消/挂账，但队列里的任务仍是 ready。自动开发暂不启动新任务；请 Lead 用 update_task 按 taskId 落状态，或由甲方发消息解除。",
-        {},
-      ).catch(() => undefined);
-      // Surface the word/action mismatch to the Lead in a bounded turn instead
-      // of silently waiting for the ten-minute expiry.
-      const readyNow = taskRows.filter((task) => task.status === "ready");
-      if (readyNow.length) {
-        void nudgeStuckTasks(projectId, readyNow).catch((error) => {
-          console.error("[auto-dev] lead hold nudge failed", error);
-        });
-      }
-      return;
     }
 
     // Scheduler ranking: only gate-blocking workbench tasks preempt code.
