@@ -459,6 +459,93 @@ function resolveEnabledOwner(
   return enabled[0] ?? "lead";
 }
 
+const GATE_ARTIFACT_KIND: Record<string, string> = {
+  sca: "sca_report",
+  sast: "sast_report",
+  code_audit: "code_audit",
+  security_test: "security_test",
+  test_report: "test_report",
+  spec_review: "spec_review",
+  security_design: "security_design",
+  release_security: "release_security",
+  security_requirements: "security_requirements",
+};
+
+/**
+ * A gate that only gets discussed never turns green. Create one concrete
+ * workbench task per missing evidence gate (idempotently), so the scheduler has
+ * something actionable instead of waiting for another chat turn.
+ */
+async function ensureGateWorkbenchTasks(
+  project: ProjectRow,
+  bundle: NonNullable<Awaited<ReturnType<typeof loadRoomBundle>>>,
+  unmetKeys: string[],
+): Promise<string[]> {
+  const db = getDb();
+  const created: string[] = [];
+  const commit =
+    bundle.currentIteration?.targetCommit ??
+    bundle.project.baseCommit ??
+    "current HEAD";
+  for (const key of unmetKeys) {
+    const artifactKind = GATE_ARTIFACT_KIND[key];
+    if (!artifactKind) continue;
+    const [existing] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.projectId, project.id),
+          eq(tasks.gateKey, key),
+          inArray(tasks.status, ["proposed", "ready", "in_progress", "review", "testing", "blocked"]),
+        ),
+      )
+      .limit(1);
+    if (existing) continue;
+    const preferred = gateOwnerRole([key], bundle.project.phase as WorkflowPhase);
+    const owner = resolveEnabledOwner(bundle.roles, preferred, bundle.project.phase as WorkflowPhase);
+    const scope = bundle.acceptanceIds;
+    const id = uuidv7();
+    await db.insert(tasks).values({
+      id,
+      projectId: project.id,
+      title: `门禁补齐：${key} @ ${commit}`.slice(0, 240),
+      description: [
+        `为当前 ${bundle.project.phase} 门禁补一份可接受的 ${artifactKind} 证据。`,
+        `目标提交：${commit}`,
+        scope.length ? `产物 acceptanceRefs 必须包含：${scope.join(", ")}` : "",
+        "只读工位；不要修改业务代码、迁移或测试文件。",
+        "回贴原始命令、完整输出、退出码；不能只用结论替代证据。",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      status: "ready",
+      mode: "workbench",
+      priority: "high",
+      roleKey: owner,
+      iterationId: bundle.currentIteration?.id ?? null,
+      acceptanceRefs: [],
+      gateKey: key,
+      requirementVersion: 1,
+      acceptance: [
+        `产出 accepted 的 ${artifactKind} 产物`,
+        `产物 commit 与 ${commit} 对齐`,
+        scope.length ? `产物 acceptanceRefs 覆盖 ${scope.length} 条 AC` : "回贴原始证据",
+      ],
+      updatedAt: new Date(),
+    });
+    created.push(key);
+    await projectEmitter(project.tenantId, project.id)(EVENT_TYPES.taskChanged, {
+      taskId: id,
+      action: "created",
+      title: `门禁补齐：${key}`,
+      status: "ready",
+      gateKey: key,
+    }).catch(() => undefined);
+  }
+  return created;
+}
+
 export async function nudgePhaseProposal(projectId: string, trigger = "gate_satisfied"): Promise<void> {
   const phaseToken = claimLock(phaseNudgeLocks, projectId, 25 * 60_000);
   if (!phaseToken) return;
@@ -533,6 +620,14 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       if (Date.now() - lastNotice >= 10 * 60_000) {
         lastGateNotice.set(phaseKey, Date.now());
         const unmet = requirements.filter((r) => !r.met);
+        const autoTasks = await ensureGateWorkbenchTasks(
+          project,
+          bundle,
+          unmet.map((r) => r.key),
+        ).catch((error) => {
+          console.error("[auto-dev] gate task creation failed", error);
+          return [] as string[];
+        });
         const preferred = gateOwnerRole(unmet.map((r) => r.key), from);
         const owner = resolveEnabledOwner(bundle.roles, preferred, from);
         const ownerName = bundle.roles.find((role) => role.key === owner)?.displayName ?? owner;
@@ -540,7 +635,9 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
         const content = [
           `自动开发当前没有可执行任务；${PHASE_LABELS[from]}门禁尚未满足。`,
           `还差：${unmet.map((r) => r.label).join("、")}。`,
-          `这个小回合交给 ${ownerName}：请补齐缺失证据，或用 create_task 创建缺失的 workbench 任务（先检查现有任务，避免重复）。`,
+          autoTasks.length
+            ? `已自动创建门禁任务：${autoTasks.join("、")}，由 ${ownerName} 承接执行。`
+            : `这个小回合交给 ${ownerName}：请补齐缺失证据，或用 create_task 创建缺失的 workbench 任务（先检查现有任务，避免重复）。`,
           "工程事项不要问甲方；补齐后 Lead 会自动发起阶段推进。",
         ].join("\n");
         await insertMessage({
