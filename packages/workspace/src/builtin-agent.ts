@@ -211,6 +211,7 @@ function workbenchSystemPrompt(): string {
     "- This is a read-only verification. Do not modify product code. Evidence and reports may only be written under docs/ or qa-evidence/.",
     "- Use the provided preview URL first. Do not start a second app instance unless the preview is broken; if you must, use a random PORT and stop it afterwards.",
     "- For source inspection use `grep`, `rg`, `head`, `tail` or `wc` directly; they are allowed and read-only.",
+    "- `fetch` runs on the host and can reach the preview; commands run inside the container and see only the container network. Do not use `ss`/`curl` for host-port evidence; use `fetch`.",
     "- Every conclusion needs evidence: command output, HTTP status/body, browser snapshot, or screenshot path. Never guess a pass.",
     "- For login, use the provided test account; never write the password into the report.",
     "- Uncovered checks must be labeled 未覆盖/无法执行.",

@@ -78,4 +78,10 @@ describe("workspace manager", () => {
     expect(result.status).toBe("passed");
     expect(result.output).toMatch(/^v\d+/);
   });
+
+  test("preserves quoted arguments for node -e scripts", async () => {
+    const result = await runCommand(workspacePath, 'node -e "console.log(6 * 7)"', 10_000);
+    expect(result.status).toBe("passed");
+    expect(result.output.trim()).toBe("42");
+  });
 });

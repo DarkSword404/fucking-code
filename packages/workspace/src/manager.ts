@@ -643,6 +643,48 @@ async function sandboxArgs(
   return out;
 }
 
+/**
+ * Shell-like tokenizer without invoking a shell. Quoted arguments (notably
+ * `node -e "..."` and `python -c "..."`) must stay one argument; whitespace
+ * splitting broke every script that contained a space.
+ */
+function splitCommand(command: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
 export async function runCommand(
   root: string,
   command: string,
@@ -650,7 +692,7 @@ export async function runCommand(
   options: { network?: boolean } = {},
 ): Promise<CommandResult> {
   const started = Date.now();
-  const parts = command.trim().split(/\s+/);
+  const parts = splitCommand(command.trim());
   const bin = parts[0] ?? "";
   const binName = basename(bin);
   if (!ALLOWED_COMMANDS.has(binName)) {
@@ -659,15 +701,6 @@ export async function runCommand(
       exitCode: null,
       status: "error",
       output: `Command not allowed: ${binName}. Allowed: ${[...ALLOWED_COMMANDS].join(", ")}`,
-      durationMs: 0,
-    };
-  }
-  if (parts.some((part) => /[;&|`$<>]/.test(part))) {
-    return {
-      command,
-      exitCode: null,
-      status: "error",
-      output: "Shell metacharacters are not allowed in this runner.",
       durationMs: 0,
     };
   }
