@@ -180,6 +180,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface PreviewMeta {
+  iterationId: string | null;
+  iterationName: string | null;
+  scope: string[];
+  commit: string | null;
+  targetCommit: string | null;
+}
+
 export const api = {
   authConfig: () => request<AuthConfig>("/auth/config"),
   login: (email: string, password: string) =>
@@ -399,7 +407,10 @@ export const api = {
       body: JSON.stringify({ name, expiresInDays: 30 }),
     }),
   startPreview: (projectId: string) =>
-    request<{ url: string; port: number }>(`/projects/${projectId}/preview`, { method: "POST" }),
+    request<{ url: string; port: number; meta: PreviewMeta }>(
+      `/projects/${projectId}/preview`,
+      { method: "POST" },
+    ),
   stopPreview: (projectId: string) =>
     request<{ ok: boolean }>(`/projects/${projectId}/preview`, { method: "DELETE" }),
   projectWorkspaces: (projectId: string) =>

@@ -4,10 +4,28 @@ import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { appInstanceId, cleanupManagedContainers, defaultRunnerImage } from "@devteam/workspace";
+import { eq } from "drizzle-orm";
+import { getDb, iterations, projects } from "@devteam/db";
+import {
+  appInstanceId,
+  cleanupManagedContainers,
+  defaultRunnerImage,
+  git,
+} from "@devteam/workspace";
+
+export interface PreviewMeta {
+  iterationId: string | null;
+  iterationName: string | null;
+  scope: string[];
+  /** Commit the preview is serving (base repo HEAD). */
+  commit: string | null;
+  /** Commit the active iteration intends to ship. */
+  targetCommit: string | null;
+}
 
 interface PreviewState {
   projectId: string;
+  meta: PreviewMeta;
   token: string;
   port: number;
   url: string;
@@ -171,6 +189,7 @@ function removeProjectPreviewContainers(projectId: string): void {
 
 function startDockerPreview(input: {
   projectId: string;
+  meta: PreviewMeta;
   repoPath: string;
   port: number;
   script: string | null;
@@ -216,6 +235,10 @@ function startDockerPreview(input: {
     `fucking-code.app=${appInstanceId()}`,
     "--label",
     `fucking-code.project=${input.projectId}`,
+    "--label",
+    `fucking-code.iteration=${(input.meta.iterationName ?? "none").replace(/[^a-zA-Z0-9_.-]/g, "_")}`,
+    "--label",
+    `fucking-code.commit=${(input.meta.commit ?? "unknown").slice(0, 40)}`,
     "-e",
     "HOME=/tmp",
     "-e",
@@ -280,15 +303,15 @@ export function cleanupOrphanedPreviews(): number {
  * inspection/dependencies, leaving two containers and two ports for one
  * project. Share one promise per project instead.
  */
-const previewStarts = new Map<string, Promise<{ url: string; port: number }>>();
+const previewStarts = new Map<string, Promise<{ url: string; port: number; meta: PreviewMeta }>>();
 
 export async function startPreview(
   projectId: string,
   repoPath: string,
-): Promise<{ url: string; port: number }> {
+): Promise<{ url: string; port: number; meta: PreviewMeta }> {
   const existing = previews.get(projectId);
   if (existing && existing.alive()) {
-    return { url: existing.url, port: existing.port };
+    return { url: existing.url, port: existing.port, meta: existing.meta };
   }
   const inflight = previewStarts.get(projectId);
   if (inflight) return inflight;
@@ -302,10 +325,10 @@ export async function startPreview(
 async function startPreviewInternal(
   projectId: string,
   repoPath: string,
-): Promise<{ url: string; port: number }> {
+): Promise<{ url: string; port: number; meta: PreviewMeta }> {
   const existing = previews.get(projectId);
   if (existing && existing.alive()) {
-    return { url: existing.url, port: existing.port };
+    return { url: existing.url, port: existing.port, meta: existing.meta };
   }
   if (existing) {
     existing.stop();
@@ -325,6 +348,30 @@ async function startPreviewInternal(
   }
   await ensureDependencies(repoPath, hasPackage);
 
+  const db = getDb();
+  const [projectRow] = await db
+    .select({ currentIterationId: projects.currentIterationId })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  const [currentIteration] = projectRow?.currentIterationId
+    ? await db
+        .select()
+        .from(iterations)
+        .where(eq(iterations.id, projectRow.currentIterationId))
+        .limit(1)
+    : [];
+  const commit = await git(repoPath, ["rev-parse", "HEAD"], 15_000)
+    .then((value) => value.trim())
+    .catch(() => null);
+  const meta: PreviewMeta = {
+    iterationId: currentIteration?.id ?? null,
+    iterationName: currentIteration?.name ?? null,
+    scope: currentIteration?.scope ?? [],
+    commit,
+    targetCommit: currentIteration?.targetCommit ?? null,
+  };
+
   const port = await freePort();
   const script = scripts.start ? "start" : scripts.dev ? "dev" : null;
   const mode = (process.env.PREVIEW_MODE ?? "host").toLowerCase();
@@ -338,7 +385,14 @@ async function startPreviewInternal(
     // before it was registered. Remove any stale preview for this project so
     // two containers can never share one project slot.
     removeProjectPreviewContainers(projectId);
-    const docker = startDockerPreview({ projectId, repoPath, port, script, publicMode });
+    const docker = startDockerPreview({
+      projectId,
+      meta,
+      repoPath,
+      port,
+      script,
+      publicMode,
+    });
     const url = publicMode ? publicPreviewUrl(port) : `/preview/${token}/`;
     const collect = (chunk: Buffer) => {
       output = `${output}${chunk.toString()}`.slice(-8000);
@@ -348,6 +402,7 @@ async function startPreviewInternal(
     docker.logs.stderr?.on("data", collect);
     state = {
       projectId,
+      meta,
       token,
       port,
       url,
@@ -373,7 +428,7 @@ async function startPreviewInternal(
       previews.delete(projectId);
       throw error;
     }
-    return { url, port };
+    return { url, port, meta };
   }
 
   let child: ChildProcess;
@@ -410,6 +465,7 @@ async function startPreviewInternal(
 
   state = {
     projectId,
+    meta,
     token,
     port,
     url: `/preview/${token}/`,
@@ -439,7 +495,7 @@ async function startPreviewInternal(
       previews.delete(projectId);
     }, ttlMs).unref();
   }
-  return { url: state.url, port };
+  return { url: state.url, port, meta };
 }
 
 export function previewForToken(token: string): PreviewState | undefined {

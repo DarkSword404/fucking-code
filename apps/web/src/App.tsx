@@ -40,6 +40,7 @@ import {
   settingsOpen,
   snapshot,
   previewLoading,
+  previewMeta,
   view,
 } from "./lib/store";
 import { Markdown } from "./lib/markdown";
@@ -196,6 +197,19 @@ function Workspace() {
           </div>
           <Show when={snap() && !isAdminView()}>
             <span class="badge phase-badge">{PHASE_LABELS[snap()!.project.phase]}</span>
+            <Show when={previewMeta()}>
+              <span
+                class="badge"
+                title={`预览实际提交 ${previewMeta()!.commit ?? "unknown"}；迭代目标 ${previewMeta()!.targetCommit ?? "未设置"}`}
+              >
+                {previewMeta()!.iterationName ?? "无迭代"} ·{" "}
+                {(previewMeta()!.commit ?? "unknown").slice(0, 8)}
+                {previewMeta()!.targetCommit &&
+                previewMeta()!.targetCommit !== previewMeta()!.commit
+                  ? " · 目标未合并"
+                  : ""}
+              </span>
+            </Show>
             <PhaseBar current={snap()!.project.phase} />
             <button class="icon-btn" title="项目设置" onClick={openSettings}>
               ⚙

@@ -9,7 +9,7 @@ import {
   type Task,
   type WorkspaceEvent,
 } from "@devteam/contracts";
-import { api, ApiError, type AdminInvite, type AdminProject, type AdminStats, type AdminUser, type AuthUser, type FileEntry, type ProjectListItem, type TestRunItem, type WorkspaceItem } from "./api";
+import { api, ApiError, type AdminInvite, type AdminProject, type AdminStats, type AdminUser, type AuthUser, type FileEntry, type PreviewMeta, type ProjectListItem, type TestRunItem, type WorkspaceItem } from "./api";
 
 export type ViewKey = "chat" | "tasks" | "code" | "artifacts" | "activity" | "admin";
 export type RightTab = "team" | "gate" | "runs";
@@ -60,6 +60,7 @@ export const [decisionOpen, setDecisionOpen] = createSignal(false);
 export const [autoStartError, setAutoStartError] = createSignal<string | null>(null);
 export const [workingTaskId, setWorkingTaskId] = createSignal<string | null>(null);
 export const [previewLoading, setPreviewLoading] = createSignal(false);
+export const [previewMeta, setPreviewMeta] = createSignal<PreviewMeta | null>(null);
 export const [turnParticipants, setTurnParticipants] = createSignal<string[] | null>(null);
 export interface PresenceUser {
   userId: string;
@@ -1095,9 +1096,17 @@ export async function openPreview(): Promise<void> {
   setPreviewLoading(true);
   try {
     const result = await api.startPreview(id);
+    setPreviewMeta(result.meta);
     if (win) win.location.href = result.url;
     else window.open(result.url, "_blank", "noopener,noreferrer");
-    toast("项目预览已启动。");
+    const iteration = result.meta.iterationName ?? "无迭代";
+    const serving = result.meta.commit?.slice(0, 8) ?? "unknown";
+    const target = result.meta.targetCommit?.slice(0, 8);
+    toast(
+      target && target !== serving
+        ? `预览已启动：${iteration}，当前 ${serving}，目标 ${target} 尚未合并。`
+        : `预览已启动：${iteration} @ ${serving}。`,
+    );
   } catch (err) {
     win?.close();
     toast(messageOf(err));
