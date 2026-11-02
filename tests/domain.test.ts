@@ -3,8 +3,11 @@ import {
   canTransitionPhase,
   canTransitionTask,
   gateRequirements,
+  extractAcceptanceIds,
   gateRequirementsForTransition,
   inferTaskRoleKey,
+  missingAcceptanceCoverage,
+  missingEvidenceCoverage,
   nextPhase,
   parseAgentOutput,
 } from "@devteam/domain";
@@ -166,6 +169,69 @@ describe("workflow gates", () => {
       approvals: [],
     });
     expect(fresh.every((r) => r.met)).toBe(true);
+  });
+
+  test("extracts AC IDs and reports scope/evidence gaps", () => {
+    expect(extractAcceptanceIds("AC22, AC38b, AC17' and AC41")).toEqual([
+      "AC22",
+      "AC38B",
+      "AC17",
+      "AC41",
+    ]);
+    expect(
+      missingAcceptanceCoverage(["AC22", "AC29"], [
+        { status: "ready", acceptanceRefs: ["AC22"] },
+        { status: "cancelled", acceptanceRefs: ["AC29"] },
+      ]),
+    ).toEqual(["AC29"]);
+    expect(
+      missingAcceptanceCoverage(["AC22"], [
+        { status: "proposed", acceptanceRefs: ["AC22"] },
+      ]),
+    ).toEqual([]);
+    expect(
+      missingEvidenceCoverage(["AC22", "AC29"], [
+        { status: "accepted", acceptanceRefs: ["AC22"] },
+        { status: "draft", acceptanceRefs: ["AC29"] },
+      ]),
+    ).toEqual(["AC29"]);
+  });
+
+  test("design coverage gate requires a task for every AC", () => {
+    const base = {
+      artifacts: [
+        { kind: "prd", status: "accepted", title: "PRD", updatedAt: "2026-01-01T10:00:00Z" },
+        {
+          kind: "acceptance_criteria",
+          status: "accepted",
+          title: "AC",
+          updatedAt: "2026-01-01T10:00:00Z",
+        },
+        { kind: "design", status: "accepted", title: "D", updatedAt: "2026-01-02T10:00:00Z" },
+        { kind: "plan", status: "accepted", title: "P", updatedAt: "2026-01-02T10:00:00Z" },
+        {
+          kind: "security_design",
+          status: "accepted",
+          title: "S",
+          updatedAt: "2026-01-02T10:00:00Z",
+        },
+      ],
+      approvals: [],
+      acceptanceIds: ["AC22", "AC29"],
+    };
+    const missing = gateRequirements("design", {
+      ...base,
+      tasks: [{ status: "ready", acceptanceRefs: ["AC22"] }],
+    });
+    expect(missing.find((r) => r.key === "scope_coverage")?.met).toBe(false);
+    const covered = gateRequirements("design", {
+      ...base,
+      tasks: [
+        { status: "ready", acceptanceRefs: ["AC22"] },
+        { status: "proposed", acceptanceRefs: ["AC29"] },
+      ],
+    });
+    expect(covered.find((r) => r.key === "scope_coverage")?.met).toBe(true);
   });
 
   test("coding waits for tasks and security evidence", () => {

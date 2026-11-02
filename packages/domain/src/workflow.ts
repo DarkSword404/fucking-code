@@ -55,9 +55,20 @@ export type PhaseGateContext = {
     status: string;
     title: string;
     updatedAt?: Date | string | null;
+    acceptanceRefs?: string[] | null;
+    commit?: string | null;
   }>;
-  tasks: Array<{ status: string; id?: string; evidence?: Record<string, unknown> | null }>;
+  tasks: Array<{
+    status: string;
+    id?: string;
+    evidence?: Record<string, unknown> | null;
+    acceptanceRefs?: string[] | null;
+    gateKey?: string | null;
+  }>;
   approvals: Array<{ targetType: string; status: string }>;
+  /** AC IDs the current iteration must deliver. */
+  acceptanceIds?: string[] | null;
+  targetCommit?: string | null;
   /**
    * Evidence must belong to the current phase. Without this, an old accepted
    * test report or release check from a previous iteration can satisfy a new
@@ -70,6 +81,55 @@ export interface GateRequirement {
   key: string;
   label: string;
   met: boolean;
+}
+
+export function normalizeAcceptanceId(value: string): string | null {
+  const match = /^AC\s*(\d+)([a-z]?)$/i.exec(value.trim());
+  if (!match) return null;
+  return `AC${match[1]}${(match[2] ?? "").toUpperCase()}`;
+}
+
+/** Pull AC IDs out of a PRD/acceptance document. */
+export function extractAcceptanceIds(content: string): string[] {
+  const found = new Set<string>();
+  for (const match of content.matchAll(/\bAC\s?(\d+)([a-z]?)\b/gi)) {
+    found.add(`AC${match[1]}${(match[2] ?? "").toUpperCase()}`);
+  }
+  return [...found];
+}
+
+/** ACs without any non-cancelled task that references them. */
+export function missingAcceptanceCoverage(
+  scope: string[],
+  tasks: Array<{ status: string; acceptanceRefs?: string[] | null }>,
+): string[] {
+  if (!scope.length) return [];
+  const normalized = scope.map(normalizeAcceptanceId).filter((id): id is string => Boolean(id));
+  const covered = new Set(
+    tasks
+      .filter((task) => task.status !== "cancelled")
+      .flatMap((task) => task.acceptanceRefs ?? [])
+      .map(normalizeAcceptanceId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  return normalized.filter((id) => !covered.has(id));
+}
+
+/** ACs without accepted evidence that references them. */
+export function missingEvidenceCoverage(
+  scope: string[],
+  artifacts: Array<{ status: string; acceptanceRefs?: string[] | null }>,
+): string[] {
+  if (!scope.length) return [];
+  const normalized = scope.map(normalizeAcceptanceId).filter((id): id is string => Boolean(id));
+  const covered = new Set(
+    artifacts
+      .filter((artifact) => artifact.status === "accepted")
+      .flatMap((artifact) => artifact.acceptanceRefs ?? [])
+      .map(normalizeAcceptanceId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  return normalized.filter((id) => !covered.has(id));
 }
 
 /** Requirements that must be satisfied before leaving `phase`. */
@@ -146,6 +206,13 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
         },
         { key: "has_tasks", label: "至少拆出 1 个可执行任务", met: ctx.tasks.length > 0 },
         {
+          key: "scope_coverage",
+          label: "每条验收标准都有对应任务",
+          met:
+            !ctx.acceptanceIds?.length ||
+            missingAcceptanceCoverage(ctx.acceptanceIds, ctx.tasks).length === 0,
+        },
+        {
           key: "security_design",
           label: "威胁模型 / 安全设计已完成",
           met: hasAccepted("security_design"),
@@ -175,6 +242,13 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
           label: "安全测试 / 渗透验证已完成",
           met: hasAccepted("security_test"),
         },
+        {
+          key: "acceptance_evidence",
+          label: "每条验收标准都有已接受证据",
+          met:
+            !ctx.acceptanceIds?.length ||
+            missingEvidenceCoverage(ctx.acceptanceIds, ctx.artifacts).length === 0,
+        },
       ];
     case "deployment":
       return [
@@ -182,6 +256,13 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
           key: "release_security",
           label: "发布安全 / SBOM 检查已通过",
           met: hasAccepted("release_security"),
+        },
+        {
+          key: "release_readiness",
+          label: "每条验收标准都有发布证据，且证据对应当前目标提交",
+          met:
+            !ctx.acceptanceIds?.length ||
+            missingEvidenceCoverage(ctx.acceptanceIds, ctx.artifacts).length === 0,
         },
       ];
     case "operations":

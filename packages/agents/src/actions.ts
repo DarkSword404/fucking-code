@@ -9,8 +9,10 @@ import {
   captureAcceptedSpec,
   decisions,
   insertMessage,
+  iterations,
   memories,
   projects,
+  taskDependencies,
   tasks,
   type RoomBundle,
   type RoleRow,
@@ -22,6 +24,8 @@ import {
   gateRequirementsForTransition,
   initialArtifactStatus,
   isEngineeringTopic,
+  missingAcceptanceCoverage,
+  normalizeAcceptanceId,
   uuidv7,
   type AskUserAction,
   type BlockAction,
@@ -29,6 +33,7 @@ import {
   type CreateTaskAction,
   type HandoffAction,
   type ProposeDecisionAction,
+  type PublishPlanAction,
   type RememberAction,
   type RequestApprovalAction,
   type RequestPhaseAction,
@@ -62,7 +67,15 @@ const now = () => new Date();
 
 /** Phase transitions are internal; only product decisions/approvals notify the client. */
 function orderedActions(actions: ValidatedAgentAction[]): ValidatedAgentAction[] {
-  return actions;
+  const rank: Record<string, number> = {
+    publish_plan: 0,
+    create_artifact: 1,
+    create_task: 2,
+    update_task: 3,
+  };
+  return [...actions].sort(
+    (a, b) => (rank[a.type] ?? 9) - (rank[b.type] ?? 9),
+  );
 }
 
 function normalizeTaskTitle(value: string): string {
@@ -162,10 +175,18 @@ export async function applyActions(
         status: x.status,
         title: x.title,
         updatedAt: x.updatedAt,
+        acceptanceRefs: x.acceptanceRefs,
+        commit: x.commit,
       })),
-      tasks: ctx.bundle.tasks.map((x) => ({ status: x.status })),
+      tasks: ctx.bundle.tasks.map((x) => ({
+        status: x.status,
+        acceptanceRefs: x.acceptanceRefs,
+        gateKey: x.gateKey,
+      })),
       approvals: ctx.bundle.approvals.map((x) => ({ targetType: x.targetType, status: x.status })),
       phaseEnteredAt: ctx.bundle.project.phaseEnteredAt,
+      acceptanceIds: ctx.bundle.acceptanceIds,
+      targetCommit: ctx.bundle.currentIteration?.targetCommit ?? null,
     };
     const requirements = gateRequirementsForTransition(from, target, gateCtx);
     if (!requirements.every((r) => r.met)) {
@@ -187,6 +208,20 @@ export async function applyActions(
         version: nextVersion,
       })
       .where(eq(projects.id, ctx.bundle.project.id));
+    if (ctx.bundle.currentIteration) {
+      await db
+        .update(iterations)
+        .set({
+          status:
+            target === "coding"
+              ? "active"
+              : target === "operations"
+                ? "released"
+                : undefined,
+          updatedAt: new Date(),
+        })
+        .where(eq(iterations.id, ctx.bundle.currentIteration.id));
+    }
     ctx.bundle.project.phase = target;
     ctx.bundle.project.version = nextVersion;
 
@@ -234,6 +269,15 @@ export async function applyActions(
             break;
           }
           const a = action as CreateTaskAction;
+          const acceptanceRefs = (a.acceptanceRefs ?? [])
+            .map(normalizeAcceptanceId)
+            .filter((id): id is string => Boolean(id));
+          if (a.mode !== "workbench" && !acceptanceRefs.length && !a.gateKey) {
+            result.notes.push(
+              `create_task rejected: code task must reference at least one AC (acceptanceRefs) or a gateKey: ${a.title}`,
+            );
+            break;
+          }
           const spec = await captureAcceptedSpec(ctx.bundle.project.id);
           if (!spec) {
             result.notes.push(
@@ -260,6 +304,9 @@ export async function applyActions(
             mode: a.mode ?? "code",
             priority: a.priority,
             roleKey: a.role ?? null,
+            iterationId: ctx.bundle.currentIteration?.id ?? null,
+            acceptanceRefs,
+            gateKey: a.gateKey ?? null,
             createdFromMessageId: ctx.messageId,
             requirementVersion: spec.prd.version,
             spec: spec as unknown as Record<string, unknown>,
@@ -307,6 +354,13 @@ export async function applyActions(
             .set({
               status: a.status ?? task.status,
               roleKey: a.roleKey ?? task.roleKey,
+              acceptanceRefs:
+                a.acceptanceRefs === undefined
+                  ? task.acceptanceRefs
+                  : a.acceptanceRefs
+                      .map(normalizeAcceptanceId)
+                      .filter((id): id is string => Boolean(id)),
+              gateKey: a.gateKey === undefined ? task.gateKey : a.gateKey,
               blockedReason: a.blockedReason ?? (a.status === "blocked" ? task.blockedReason : null),
               evidence: a.evidence
                 ? { ...task.evidence, note: a.evidence, at: new Date().toISOString() }
@@ -370,6 +424,11 @@ export async function applyActions(
                 title: a.title,
                 currentVersion: version,
                 status: initialArtifactStatus(a.kind),
+                iterationId: ctx.bundle.currentIteration?.id ?? null,
+                acceptanceRefs: (a.acceptanceRefs ?? [])
+                  .map(normalizeAcceptanceId)
+                  .filter((id): id is string => Boolean(id)),
+                commit: a.commit ?? null,
                 updatedAt: now(),
               })
               .where(eq(artifacts.id, existing.id));
@@ -392,6 +451,11 @@ export async function applyActions(
               title: a.title,
               status: initialArtifactStatus(a.kind),
               currentVersion: 1,
+              iterationId: ctx.bundle.currentIteration?.id ?? null,
+              acceptanceRefs: (a.acceptanceRefs ?? [])
+                .map(normalizeAcceptanceId)
+                .filter((id): id is string => Boolean(id)),
+              commit: a.commit ?? null,
               createdByType: "agent",
               createdById: ctx.actorRole.id,
               updatedAt: now(),
@@ -428,11 +492,39 @@ export async function applyActions(
               fresh &&
               ["coding", "testing", "deployment", "operations"].includes(fresh.phase)
             ) {
+              // A changed PRD/AC opens a fresh planning iteration. The plan
+              // publisher fills scope/tasks; until then the phase is design.
+              let [planningIteration] = await db
+                .select()
+                .from(iterations)
+                .where(
+                  and(
+                    eq(iterations.projectId, ctx.bundle.project.id),
+                    eq(iterations.status, "planning"),
+                  ),
+                )
+                .limit(1);
+              if (!planningIteration) {
+                const iterationId = uuidv7();
+                [planningIteration] = await db
+                  .insert(iterations)
+                  .values({
+                    id: iterationId,
+                    tenantId: ctx.bundle.project.tenantId,
+                    projectId: ctx.bundle.project.id,
+                    name: `next-${Date.now()}`,
+                    status: "planning",
+                    baseCommit: ctx.bundle.project.baseCommit,
+                    scope: [],
+                  })
+                  .returning();
+              }
               await db
                 .update(projects)
                 .set({
                   phase: "design",
                   phaseEnteredAt: now(),
+                  currentIterationId: planningIteration?.id ?? null,
                   updatedAt: now(),
                   version: fresh.version + 1,
                 })
@@ -472,6 +564,182 @@ export async function applyActions(
               );
             }
           }
+          break;
+        }
+
+        case "publish_plan": {
+          const a = action as PublishPlanAction;
+          const scope = [...new Set(a.scope.map(normalizeAcceptanceId).filter((id): id is string => Boolean(id)))];
+          if (!scope.length) {
+            result.notes.push("publish_plan rejected: scope contains no valid AC IDs");
+            break;
+          }
+          const planRefs = a.tasks.flatMap((task) =>
+            (task.acceptanceRefs ?? []).map(normalizeAcceptanceId).filter((id): id is string => Boolean(id)),
+          );
+          const missing = missingAcceptanceCoverage(
+            scope,
+            a.tasks.map((task) => ({
+              status: "proposed",
+              acceptanceRefs: task.acceptanceRefs ?? [],
+            })),
+          );
+          if (missing.length) {
+            result.notes.push(
+              `publish_plan rejected: ACs without tasks: ${missing.join(", ")}`,
+            );
+            break;
+          }
+          const [current] = await db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, ctx.bundle.project.id))
+            .limit(1);
+          const [currentIteration] = current?.currentIterationId
+            ? await db
+                .select()
+                .from(iterations)
+                .where(eq(iterations.id, current.currentIterationId))
+                .limit(1)
+            : [];
+          const [byName] = await db
+            .select()
+            .from(iterations)
+            .where(
+              and(
+                eq(iterations.projectId, ctx.bundle.project.id),
+                eq(iterations.name, a.name),
+              ),
+            )
+            .limit(1);
+          const existing =
+            currentIteration && currentIteration.status === "planning"
+              ? currentIteration
+              : byName;
+          const iterationId = existing?.id ?? uuidv7();
+          if (existing) {
+            await db
+              .update(iterations)
+              .set({
+                name: a.name,
+                baseCommit: a.baseCommit ?? existing.baseCommit,
+                targetCommit: a.targetCommit ?? existing.targetCommit,
+                scope,
+                status: "planning",
+                updatedAt: now(),
+              })
+              .where(eq(iterations.id, iterationId));
+          } else {
+            await db.insert(iterations).values({
+              id: iterationId,
+              tenantId: ctx.bundle.project.tenantId,
+              projectId: ctx.bundle.project.id,
+              name: a.name,
+              status: "planning",
+              baseCommit: a.baseCommit ?? null,
+              targetCommit: a.targetCommit ?? null,
+              scope,
+            });
+          }
+          const currentTasks = await db
+            .select()
+            .from(tasks)
+            .where(eq(tasks.projectId, ctx.bundle.project.id));
+          const byTitle = new Map(currentTasks.map((task) => [task.title, task]));
+          const created: Array<{ id: string; title: string }> = [];
+          for (const spec of a.tasks) {
+            const acceptanceRefs = (spec.acceptanceRefs ?? [])
+              .map(normalizeAcceptanceId)
+              .filter((id): id is string => Boolean(id));
+            const existingTask = byTitle.get(spec.title);
+            if (existingTask) {
+              // Adopt a legacy/ad-hoc task into this iteration instead of
+              // creating a duplicate with the same title.
+              if (!existingTask.iterationId || existingTask.iterationId === iterationId) {
+                await db
+                  .update(tasks)
+                  .set({
+                    iterationId,
+                    acceptanceRefs,
+                    gateKey: spec.gateKey ?? null,
+                    roleKey: spec.role,
+                    mode: spec.mode,
+                    priority: spec.priority,
+                    updatedAt: now(),
+                  })
+                  .where(eq(tasks.id, existingTask.id));
+              }
+              created.push({ id: existingTask.id, title: existingTask.title });
+              continue;
+            }
+            const id = uuidv7();
+            await db.insert(tasks).values({
+              id,
+              projectId: ctx.bundle.project.id,
+              title: spec.title,
+              description: spec.description,
+              status: "proposed",
+              mode: spec.mode,
+              priority: spec.priority,
+              roleKey: spec.role,
+              iterationId,
+              acceptanceRefs,
+              gateKey: spec.gateKey ?? null,
+              createdFromMessageId: ctx.messageId,
+              requirementVersion: 1,
+              acceptance: spec.acceptance,
+              updatedAt: now(),
+            });
+            created.push({ id, title: spec.title });
+          }
+          // Dependencies by title, after all tasks exist.
+          for (const spec of a.tasks) {
+            const task = created.find((row) => row.title === spec.title);
+            if (!task) continue;
+            for (const depTitle of spec.dependsOn ?? []) {
+              const dep = created.find((row) => row.title === depTitle);
+              if (!dep || dep.id === task.id) continue;
+              await db
+                .insert(taskDependencies)
+                .values({ taskId: task.id, dependsOnTaskId: dep.id })
+                .onConflictDoNothing();
+            }
+          }
+          const [projectRow] = await db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, ctx.bundle.project.id))
+            .limit(1);
+          if (projectRow) {
+            await db
+              .update(projects)
+              .set({
+                currentIterationId: iterationId,
+                phase: ["coding", "testing", "deployment", "operations"].includes(
+                  projectRow.phase,
+                )
+                  ? "design"
+                  : projectRow.phase,
+                phaseEnteredAt: ["coding", "testing", "deployment", "operations"].includes(
+                  projectRow.phase,
+                )
+                  ? now()
+                  : projectRow.phaseEnteredAt,
+                updatedAt: now(),
+                version: projectRow.version + 1,
+              })
+              .where(eq(projects.id, projectRow.id));
+          }
+          result.taskIds.push(...created.map((row) => row.id));
+          await ctx.emit(EVENT_TYPES.taskChanged, {
+            action: "plan_published",
+            iterationId,
+            scope,
+            taskCount: created.length,
+          });
+          result.notes.push(
+            `plan published: ${a.name}, ${created.length} tasks, ${scope.length} ACs`,
+          );
           break;
         }
 

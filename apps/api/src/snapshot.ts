@@ -9,7 +9,13 @@ import {
   mainRoom,
   type ProjectRow,
 } from "@devteam/db";
-import { canAdvance, gateRequirements, nextPhase } from "@devteam/domain";
+import {
+  canAdvance,
+  gateRequirements,
+  missingAcceptanceCoverage,
+  missingEvidenceCoverage,
+  nextPhase,
+} from "@devteam/domain";
 import { isDemoMode } from "./demo.js";
 import { HttpError } from "./http.js";
 
@@ -39,10 +45,20 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
       status: a.status,
       title: a.title,
       updatedAt: a.updatedAt,
+      acceptanceRefs: a.acceptanceRefs,
+      commit: a.commit,
     })),
-    tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
+    tasks: bundle.tasks.map((t) => ({
+      status: t.status,
+      id: t.id,
+      evidence: t.evidence,
+      acceptanceRefs: t.acceptanceRefs,
+      gateKey: t.gateKey,
+    })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     phaseEnteredAt: bundle.project.phaseEnteredAt,
+    acceptanceIds: bundle.acceptanceIds,
+    targetCommit: bundle.currentIteration?.targetCommit ?? null,
   };
 
   const [cursorRow] = await db
@@ -66,6 +82,25 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
       roleName: row.role.displayName,
     })) as never,
     phaseRequirements: gateRequirements(bundle.project.phase as WorkflowPhase, gateCtx),
+    currentIteration: bundle.currentIteration as never,
+    iterations: bundle.iterations as never,
+    coverage: {
+      scope: bundle.acceptanceIds,
+      missingTasks: missingAcceptanceCoverage(
+        bundle.acceptanceIds,
+        bundle.tasks.map((task) => ({
+          status: task.status,
+          acceptanceRefs: task.acceptanceRefs,
+        })),
+      ),
+      missingEvidence: missingEvidenceCoverage(
+        bundle.acceptanceIds,
+        bundle.artifacts.map((artifact) => ({
+          status: artifact.status,
+          acceptanceRefs: artifact.acceptanceRefs,
+        })),
+      ),
+    },
     nextPhase: nextPhase(bundle.project.phase as WorkflowPhase),
     canAdvance: canAdvance(bundle.project.phase as WorkflowPhase, gateCtx),
     eventCursor: cursorRow?.max ?? 0,

@@ -586,6 +586,9 @@ async function finalizeWork(input: {
           mode: task.mode,
           priority: task.priority,
           roleKey: task.roleKey,
+          iterationId: task.iterationId,
+          acceptanceRefs: task.acceptanceRefs,
+          gateKey: task.gateKey,
           requirementVersion: task.requirementVersion,
           spec: task.spec as Record<string, unknown>,
           acceptance: isWorkbench

@@ -25,6 +25,7 @@ import {
 } from "@devteam/db";
 import {
   canTransitionPhase,
+  gateRequirements,
   gateRequirementsForTransition,
   inferTaskRoleKey,
   nextPhase,
@@ -514,10 +515,20 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
         status: a.status,
         title: a.title,
         updatedAt: a.updatedAt,
+        acceptanceRefs: a.acceptanceRefs,
+        commit: a.commit,
       })),
-      tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
+      tasks: bundle.tasks.map((t) => ({
+        status: t.status,
+        id: t.id,
+        evidence: t.evidence,
+        acceptanceRefs: t.acceptanceRefs,
+        gateKey: t.gateKey,
+      })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
       phaseEnteredAt: bundle.project.phaseEnteredAt,
+      acceptanceIds: bundle.acceptanceIds,
+      targetCommit: bundle.currentIteration?.targetCommit ?? null,
     });
     if (!requirements.every((r) => r.met)) {
       // Idle is not an error: the scheduler has no ready work because a gate is
@@ -1753,17 +1764,62 @@ export async function autoStartNext(projectId: string): Promise<void> {
       return;
     }
 
+    // Scheduler ranking: only gate-blocking workbench tasks preempt code.
+    // Optional evidence and old-iteration tasks no longer monopolize the queue.
+    const bundle = await loadRoomBundle(project.id, room.id, 0);
+    const unmetGateKeys = new Set<string>();
+    if (bundle) {
+      const gateCtx = {
+        artifacts: bundle.artifacts.map((a) => ({
+          kind: a.kind,
+          status: a.status,
+          title: a.title,
+          updatedAt: a.updatedAt,
+          acceptanceRefs: a.acceptanceRefs,
+          commit: a.commit,
+        })),
+        tasks: bundle.tasks.map((t) => ({
+          status: t.status,
+          id: t.id,
+          evidence: t.evidence,
+          acceptanceRefs: t.acceptanceRefs,
+          gateKey: t.gateKey,
+        })),
+        approvals: bundle.approvals.map((a) => ({
+          targetType: a.targetType,
+          status: a.status,
+        })),
+        phaseEnteredAt: bundle.project.phaseEnteredAt,
+        acceptanceIds: bundle.acceptanceIds,
+        targetCommit: bundle.currentIteration?.targetCommit ?? null,
+      };
+      for (const requirement of gateRequirements(project.phase as never, gateCtx)) {
+        if (!requirement.met) unmetGateKeys.add(requirement.key);
+      }
+    }
     let candidate: TaskRow | undefined;
     const priorityRank = (priority: string | null | undefined): number =>
       priority === "high" ? 0 : priority === "low" ? 2 : 1;
-    // Read-only investigation first (it often unblocks code), then priority,
-    // then age. The Lead explicitly asks for this order but cannot encode it
-    // in free text; the scheduler should not make a gate task wait behind a
-    // code task that depends on its result.
     const readyTasks = taskRows
       .filter((task) => task.status === "ready")
+      .filter(
+        (task) =>
+          !project.currentIterationId ||
+          !task.iterationId ||
+          task.iterationId === project.currentIterationId,
+      )
+      .filter(
+        (task) =>
+          task.mode !== "workbench" ||
+          !task.gateKey ||
+          unmetGateKeys.has(task.gateKey),
+      )
       .sort((a, b) => {
-        const mode = Number(a.mode !== "workbench") - Number(b.mode !== "workbench");
+        const rank = (task: TaskRow): number => {
+          if (task.mode === "workbench") return task.gateKey ? 0 : 2;
+          return 1;
+        };
+        const mode = rank(a) - rank(b);
         if (mode) return mode;
         const priority = priorityRank(a.priority) - priorityRank(b.priority);
         if (priority) return priority;

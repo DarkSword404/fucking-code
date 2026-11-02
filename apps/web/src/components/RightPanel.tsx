@@ -31,6 +31,8 @@ export function RightPanel() {
   const approvals = () => snap()?.approvals.filter((a) => a.status === "pending") ?? [];
   const decisions = () => snap()?.decisions.filter((d) => d.status === "proposed") ?? [];
   const requirements = () => snap()?.phaseRequirements ?? [];
+  const coverage = () => snap()?.coverage;
+  const iteration = () => snap()?.currentIteration;
   const inReview = () => snap()?.artifacts.filter((a) => a.status === "in_review") ?? [];
 
   return (
@@ -148,6 +150,27 @@ export function RightPanel() {
                 </div>
               )}
             </For>
+          </Show>
+
+          <Show when={iteration()}>
+            <div class="panel-title" style={{ "margin-top": "14px" }}>
+              迭代 · {iteration()!.name} · {iteration()!.status}
+            </div>
+            <div class="gate-note">
+              范围 {coverage()?.scope.length ?? 0} 条 AC；缺任务{" "}
+              {coverage()?.missingTasks.length ?? 0} 条；缺证据{" "}
+              {coverage()?.missingEvidence.length ?? 0} 条。
+            </div>
+            <Show when={(coverage()?.missingTasks.length ?? 0) > 0}>
+              <div class="gate-note">
+                缺任务：{coverage()!.missingTasks.slice(0, 12).join("、")}
+              </div>
+            </Show>
+            <Show when={(coverage()?.missingEvidence.length ?? 0) > 0}>
+              <div class="gate-note">
+                缺证据：{coverage()!.missingEvidence.slice(0, 12).join("、")}
+              </div>
+            </Show>
           </Show>
 
           <Show when={approvals().length}>

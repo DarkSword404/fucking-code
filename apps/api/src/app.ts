@@ -52,6 +52,7 @@ import {
   getDb,
   insertMessage,
   inviteCodes,
+  iterations,
   loadRoomBundle,
   memories,
   messagePage,
@@ -2576,10 +2577,20 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
         status: a.status,
         title: a.title,
         updatedAt: a.updatedAt,
+        acceptanceRefs: a.acceptanceRefs,
+        commit: a.commit,
       })),
-      tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
+      tasks: bundle.tasks.map((t) => ({
+        status: t.status,
+        id: t.id,
+        evidence: t.evidence,
+        acceptanceRefs: t.acceptanceRefs,
+        gateKey: t.gateKey,
+      })),
       approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
       phaseEnteredAt: project.phaseEnteredAt,
+      acceptanceIds: bundle.acceptanceIds,
+      targetCommit: bundle.currentIteration?.targetCommit ?? null,
     });
     if (!transitionRequirements.every((r) => r.met)) {
       throw new HttpError(
@@ -2626,6 +2637,20 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
       agileLoop: phaseIndex(phaseTarget) <= phaseIndex(from),
       approvalId: approval.id,
     });
+    if (updatedProject.currentIterationId) {
+      await db
+        .update(iterations)
+        .set({
+          status:
+            phaseTarget === "coding"
+              ? "active"
+              : phaseTarget === "operations"
+                ? "released"
+                : undefined,
+          updatedAt: new Date(),
+        })
+        .where(eq(iterations.id, updatedProject.currentIterationId));
+    }
     await audit({
       tenantId: project.tenantId,
       projectId: project.id,
@@ -2788,10 +2813,20 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
       status: a.status,
       title: a.title,
       updatedAt: a.updatedAt,
+      acceptanceRefs: a.acceptanceRefs,
+      commit: a.commit,
     })),
-    tasks: bundle.tasks.map((t) => ({ status: t.status, id: t.id, evidence: t.evidence })),
+    tasks: bundle.tasks.map((t) => ({
+      status: t.status,
+      id: t.id,
+      evidence: t.evidence,
+      acceptanceRefs: t.acceptanceRefs,
+      gateKey: t.gateKey,
+    })),
     approvals: bundle.approvals.map((a) => ({ targetType: a.targetType, status: a.status })),
     phaseEnteredAt: project.phaseEnteredAt,
+    acceptanceIds: bundle.acceptanceIds,
+    targetCommit: bundle.currentIteration?.targetCommit ?? null,
   };
   const requirements = gateRequirementsForTransition(from, to, gateCtx);
 
@@ -2823,6 +2858,16 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     by: user.displayName,
     forced: Boolean(body.force),
   });
+  if (updated.currentIterationId) {
+    await db
+      .update(iterations)
+      .set({
+        status:
+          to === "coding" ? "active" : to === "operations" ? "released" : undefined,
+        updatedAt: new Date(),
+      })
+      .where(eq(iterations.id, updated.currentIterationId));
+  }
   void autoStartNext(project.id);
   await audit({
     tenantId: project.tenantId,

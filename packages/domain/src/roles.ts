@@ -24,7 +24,8 @@ export const ACTION_PROTOCOL = `
 \`\`\`devteam
 {"actions":[
   {"type":"create_artifact","kind":"prd","title":"...","summary":"一句话摘要","content":"完整 Markdown 内容"},
-  {"type":"create_task","title":"...","description":"...","role":"frontend","mode":"code","priority":"medium","acceptance":["可验证的标准"]},
+  {"type":"publish_plan","name":"v1.1","scope":["AC22","AC29"],"baseCommit":"...","tasks":[{"title":"...","description":"...","role":"frontend","mode":"code","acceptanceRefs":["AC29"],"acceptance":["可验证的标准"]}]},
+  {"type":"create_task","title":"...","description":"...","role":"frontend","mode":"code","priority":"medium","acceptanceRefs":["AC22"],"acceptance":["可验证的标准"]},
   {"type":"update_task","taskTitle":"...","status":"done","evidence":"证据说明"},
   {"type":"propose_decision","title":"...","rationale":"...","alternatives":["备选方案"]},
   {"type":"request_approval","targetType":"phase_review","title":"...","reason":"..."},
@@ -55,8 +56,10 @@ export const ACTION_PROTOCOL = `
 16. 技术方案、接口契约、计划、Diff、测试报告、规格核对属于团队内部评审，不要要求甲方逐个接受或验收；只有 PRD、验收标准、产品范围/优先级等产品意图需要甲方确认。
 17. create_task 必须给出 role，否则任务无法进入承接确认；发现没有承接角色的 proposed 任务时，由 Lead 用 update_task 的 roleKey 指定负责人，或取消/返工。没有 role 的任务不会被执行，也不应长期占着阶段门禁。
 18. 只要你在消息里声称取消、暂停、挂账、重开、指派或改变任务状态，就必须在同一轮输出对应的 update_task/create_task 代码块，并优先用 taskId。只发消息不会改变队列；调度器只认数据库状态。
-17. 代码任务通过测试和规格核对后，系统会内部评审并自动合并；不要要求甲方点「验收合并」，也不要把内部工程门禁包装成甲方决策。
-18. 遇到工程执行问题（seed 怎么跑、预览地址/账号怎么注入、谁来 revoke token、怎么点页面、环境变量怎么配），先由对应角色在 workbench/code 工位内部解决，或采用平台注入的默认值；不要把这些作为甲方问题发出去。
+19. 新一轮迭代或需求范围变更时必须用 publish_plan 一次发布：name、scope（全部 AC ID）、baseCommit、tasks。scope 里每一条 AC 都必须至少被一个任务的 acceptanceRefs 引用；缺一条计划会被拒绝。不要再用零散 create_task 拼一个迭代。
+20. code 任务的 acceptanceRefs 必填；workbench 取证任务必须带 gateKey（它解除哪个门禁）或 acceptanceRefs。没有引用的任务不得进入执行队列。
+21. 代码任务通过测试和规格核对后，系统会内部评审并自动合并；不要要求甲方点「验收合并」，也不要把内部工程门禁包装成甲方决策。
+22. 遇到工程执行问题（seed 怎么跑、预览地址/账号怎么注入、谁来 revoke token、怎么点页面、环境变量怎么配），先由对应角色在 workbench/code 工位内部解决，或采用平台注入的默认值；不要把这些作为甲方问题发出去。
 19. 编码、测试、合并、安全扫描、发布检查默认自动跑完；产品范围/验收口径变化优先记录为不阻塞的 propose_decision，团队按保守默认继续；只有不可逆或阻塞发布的取舍才停下来等甲方。
 `.trim();
 

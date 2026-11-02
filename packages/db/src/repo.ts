@@ -16,6 +16,7 @@ import {
   artifactVersions,
   decisions,
   events,
+  iterations,
   memories,
   messages,
   projectMembers,
@@ -89,6 +90,10 @@ export interface RoomBundle {
   decisions: Array<typeof decisions.$inferSelect>;
   approvals: Array<typeof approvals.$inferSelect>;
   memories: Array<typeof memories.$inferSelect>;
+  iterations: Array<typeof iterations.$inferSelect>;
+  currentIteration: typeof iterations.$inferSelect | null;
+  /** Scope of the active iteration; empty for legacy projects. */
+  acceptanceIds: string[];
 }
 
 const visibleMessage = sql`coalesce(${messages.metadata}->>'kind', '') NOT IN ('gate_waiting', 'ops_heartbeat')`;
@@ -104,7 +109,7 @@ export async function loadRoomBundle(
   const [room] = await db.select().from(rooms).where(eq(rooms.id, roomId)).limit(1);
   if (!room || room.projectId !== projectId) return null;
 
-  const [roles, recent, taskRows, artifactRows, decisionRows, approvalRows, memoryRows] = await Promise.all([
+  const [roles, recent, taskRows, artifactRows, decisionRows, approvalRows, memoryRows, iterationRows] = await Promise.all([
     db.select().from(agentRoles).where(eq(agentRoles.projectId, projectId)).orderBy(agentRoles.sortOrder),
     db
       .select()
@@ -122,6 +127,11 @@ export async function loadRoomBundle(
       .where(and(eq(memories.projectId, projectId), eq(memories.status, "accepted")))
       .orderBy(desc(memories.updatedAt))
       .limit(20),
+    db
+      .select()
+      .from(iterations)
+      .where(eq(iterations.projectId, projectId))
+      .orderBy(desc(iterations.createdAt)),
   ]);
 
   const artifactIds = artifactRows.map((a) => a.id);
@@ -132,6 +142,11 @@ export async function loadRoomBundle(
         .where(inArray(artifactVersions.artifactId, artifactIds))
         .orderBy(desc(artifactVersions.version))
     : [];
+
+  const currentIteration =
+    iterationRows.find((row) => row.id === project.currentIterationId) ??
+    iterationRows.find((row) => row.status === "active" || row.status === "planning") ??
+    null;
 
   return {
     project,
@@ -144,6 +159,9 @@ export async function loadRoomBundle(
     decisions: decisionRows,
     approvals: approvalRows,
     memories: memoryRows,
+    iterations: iterationRows,
+    currentIteration,
+    acceptanceIds: currentIteration?.scope ?? [],
   };
 }
 

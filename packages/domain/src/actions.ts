@@ -22,6 +22,10 @@ const createTask = z.object({
   priority: z.enum(PRIORITIES as unknown as [string, ...string[]]).default("medium"),
   mode: z.enum(TASK_MODES as unknown as [string, ...string[]]).default("code"),
   acceptance: z.array(z.string().max(500)).max(20).default([]),
+  /** AC IDs this task delivers or verifies (e.g. ["AC22","AC29"]). */
+  acceptanceRefs: z.array(z.string().max(20)).max(20).default([]),
+  /** Workbench evidence tasks point at the gate they unblock. */
+  gateKey: z.string().max(64).optional(),
 });
 
 const updateTask = z.object({
@@ -47,6 +51,8 @@ const updateTask = z.object({
   blockedReason: z.string().max(2000).optional(),
   /** Reassign an orphaned proposal to a role; that role still confirms it. */
   roleKey: roleKey.optional(),
+  acceptanceRefs: z.array(z.string().max(20)).max(20).optional(),
+  gateKey: z.string().max(64).nullable().optional(),
 });
 
 const createArtifact = z.object({
@@ -55,6 +61,10 @@ const createArtifact = z.object({
   title: z.string().min(1).max(240),
   summary: z.string().max(1000).default(""),
   content: z.string().min(1).max(200_000),
+  /** Evidence artifacts declare which ACs they cover. */
+  acceptanceRefs: z.array(z.string().max(20)).max(50).default([]),
+  /** Commit the evidence was produced against. */
+  commit: z.string().max(80).optional(),
 });
 
 const proposeDecision = z.object({
@@ -62,6 +72,29 @@ const proposeDecision = z.object({
   title: z.string().min(1).max(240),
   rationale: z.string().max(8000).default(""),
   alternatives: z.array(z.string().max(1000)).max(10).default([]),
+});
+
+const planTask = z.object({
+  title: z.string().min(1).max(240),
+  description: z.string().max(8000).default(""),
+  role: roleKey,
+  mode: z.enum(TASK_MODES as unknown as [string, ...string[]]).default("code"),
+  priority: z.enum(PRIORITIES as unknown as [string, ...string[]]).default("medium"),
+  acceptance: z.array(z.string().max(500)).max(20).default([]),
+  acceptanceRefs: z.array(z.string().max(20)).max(20).default([]),
+  gateKey: z.string().max(64).optional(),
+  /** Titles of tasks in this plan that must finish first. */
+  dependsOn: z.array(z.string().max(240)).max(20).default([]),
+});
+
+const publishPlan = z.object({
+  type: z.literal("publish_plan"),
+  name: z.string().min(1).max(120),
+  baseCommit: z.string().max(80).optional(),
+  targetCommit: z.string().max(80).optional(),
+  /** AC IDs this iteration must deliver. */
+  scope: z.array(z.string().max(20)).min(1).max(100),
+  tasks: z.array(planTask).min(1).max(40),
 });
 
 const requestApproval = z.object({
@@ -111,6 +144,7 @@ const block = z.object({
 export const agentActionSchema = z.discriminatedUnion("type", [
   createTask,
   updateTask,
+  publishPlan,
   createArtifact,
   proposeDecision,
   requestApproval,
@@ -127,6 +161,7 @@ export const actionEnvelopeSchema = z.object({
 });
 
 export type CreateTaskAction = z.infer<typeof createTask>;
+export type PublishPlanAction = z.infer<typeof publishPlan>;
 export type UpdateTaskAction = z.infer<typeof updateTask>;
 export type CreateArtifactAction = z.infer<typeof createArtifact>;
 export type ProposeDecisionAction = z.infer<typeof proposeDecision>;

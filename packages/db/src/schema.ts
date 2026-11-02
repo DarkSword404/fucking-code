@@ -115,6 +115,8 @@ export const projects = pgTable(
      * a restart does not mistake a system pause for a user pause.
      */
     autoPauseReason: text("auto_pause_reason"),
+    /** The iteration currently being planned/built; history stays in iterations. */
+    currentIterationId: uuid("current_iteration_id"),
     version: integer("version").notNull().default(1),
     createdAt,
     updatedAt,
@@ -248,6 +250,29 @@ export const attachments = pgTable(
   (t) => [index("attachments_project_idx").on(t.projectId, t.messageId)],
 );
 
+export const iterations = pgTable(
+  "iterations",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    status: text("status").notNull().default("planning"),
+    baseCommit: text("base_commit"),
+    targetCommit: text("target_commit"),
+    /** The AC IDs this iteration must deliver (e.g. ["AC22","AC29"]). */
+    scope: jsonb("scope").$type<string[]>().notNull().default([]),
+    planArtifactId: uuid("plan_artifact_id"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [unique("iterations_project_name_unique").on(t.projectId, t.name)],
+);
+
 export const tasks = pgTable(
   "tasks",
   {
@@ -261,6 +286,11 @@ export const tasks = pgTable(
     mode: text("mode").notNull().default("code"),
     priority: text("priority").notNull().default("medium"),
     roleKey: text("role_key"),
+    iterationId: uuid("iteration_id"),
+    /** AC IDs this task implements or verifies. */
+    acceptanceRefs: jsonb("acceptance_refs").$type<string[]>().notNull().default([]),
+    /** Workbench evidence tasks point at the gate they unblock. */
+    gateKey: text("gate_key"),
     createdFromMessageId: uuid("created_from_message_id"),
     requirementVersion: integer("requirement_version").notNull().default(1),
     spec: jsonb("spec").$type<Record<string, unknown>>().notNull().default({}),
@@ -296,6 +326,11 @@ export const artifacts = pgTable(
     kind: text("kind").notNull(),
     artifactKey: text("artifact_key").notNull().default(""),
     title: text("title").notNull(),
+    iterationId: uuid("iteration_id"),
+    /** Evidence artifacts declare which ACs they cover. */
+    acceptanceRefs: jsonb("acceptance_refs").$type<string[]>().notNull().default([]),
+    /** Commit the evidence was produced against. */
+    commit: text("commit"),
     status: text("status").notNull().default("draft"),
     currentVersion: integer("current_version").notNull().default(1),
     createdByType: text("created_by_type").notNull().default("agent"),

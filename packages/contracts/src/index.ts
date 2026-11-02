@@ -288,6 +288,9 @@ export interface Task {
   mode?: TaskMode;
   priority: Priority;
   roleKey: string | null;
+  iterationId?: string | null;
+  acceptanceRefs?: string[];
+  gateKey?: string | null;
   createdFromMessageId: string | null;
   requirementVersion: number;
   spec: TaskSpec | Record<string, never>;
@@ -311,6 +314,9 @@ export interface Artifact {
   title: string;
   status: ArtifactStatus;
   currentVersion: number;
+  iterationId?: string | null;
+  acceptanceRefs?: string[];
+  commit?: string | null;
   createdByType: SenderType;
   createdById: string | null;
   createdAt: string;
@@ -386,6 +392,25 @@ export interface WorkspaceEvent {
   createdAt: string;
 }
 
+export interface Iteration {
+  id: string;
+  projectId: string;
+  name: string;
+  status: string;
+  baseCommit: string | null;
+  targetCommit: string | null;
+  scope: string[];
+  planArtifactId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectCoverage {
+  scope: string[];
+  missingTasks: string[];
+  missingEvidence: string[];
+}
+
 export interface ProjectSnapshot {
   project: Project;
   room: Room;
@@ -396,6 +421,9 @@ export interface ProjectSnapshot {
   approvals: Approval[];
   runs: AgentRun[];
   phaseRequirements: PhaseRequirement[];
+  currentIteration: Iteration | null;
+  iterations: Iteration[];
+  coverage: ProjectCoverage;
   nextPhase: WorkflowPhase | null;
   canAdvance: boolean;
   /** Latest persisted event seq. SSE resumes from here. */
