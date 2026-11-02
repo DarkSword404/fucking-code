@@ -83,6 +83,22 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
       // phase transition; it is far shorter than a stale iteration.
       return new Date(artifact.updatedAt).getTime() >= phaseStarted - 5 * 60_000;
     });
+  // A plan/design written before the latest PRD or acceptance revision is
+  // stale: the scope may have grown (for example a new v1.1 dashboard/admin
+  // requirement) while the old plan still satisfies the gate. That lets the
+  // team enter coding with no tasks for the new scope.
+  const latestSpecAt = ctx.artifacts
+    .filter((artifact) => artifact.kind === "prd" || artifact.kind === "acceptance_criteria")
+    .reduce((latest, artifact) => {
+      if (!artifact.updatedAt) return latest;
+      return Math.max(latest, new Date(artifact.updatedAt).getTime());
+    }, 0);
+  const hasAcceptedForSpec = (kind: string) =>
+    ctx.artifacts.some((artifact) => {
+      if (artifact.kind !== kind || artifact.status !== "accepted") return false;
+      if (!latestSpecAt || !artifact.updatedAt) return true;
+      return new Date(artifact.updatedAt).getTime() >= latestSpecAt - 5 * 60_000;
+    });
   // A failed task that has already produced a defect successor is superseded:
   // the successor carries the rework, so the old task must not hold the gate
   // open forever. Explicit `supersededBy` markers are treated the same way.
@@ -117,8 +133,16 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
       ];
     case "design":
       return [
-        { key: "design_accepted", label: "技术方案已生成并内部接受", met: hasAccepted("design") },
-        { key: "plan_accepted", label: "实施计划已生成并内部接受", met: hasAccepted("plan") },
+        {
+          key: "design_accepted",
+          label: "技术方案已生成并内部接受",
+          met: hasAcceptedForSpec("design"),
+        },
+        {
+          key: "plan_accepted",
+          label: "实施计划已生成并内部接受（须覆盖最新 PRD/验收标准）",
+          met: hasAcceptedForSpec("plan"),
+        },
         { key: "has_tasks", label: "至少拆出 1 个可执行任务", met: ctx.tasks.length > 0 },
         {
           key: "security_design",

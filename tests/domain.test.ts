@@ -119,6 +119,55 @@ describe("workflow gates", () => {
     expect(ok.every((r) => r.met)).toBe(true);
   });
 
+  test("design and plan must be newer than the latest spec revision", () => {
+    const stale = gateRequirements("design", {
+      artifacts: [
+        { kind: "prd", status: "accepted", title: "PRD", updatedAt: "2026-01-01T10:00:00Z" },
+        {
+          kind: "acceptance_criteria",
+          status: "accepted",
+          title: "AC",
+          updatedAt: "2026-01-01T10:00:00Z",
+        },
+        { kind: "design", status: "accepted", title: "D", updatedAt: "2026-01-01T09:00:00Z" },
+        { kind: "plan", status: "accepted", title: "P", updatedAt: "2026-01-01T09:00:00Z" },
+        {
+          kind: "security_design",
+          status: "accepted",
+          title: "S",
+          updatedAt: "2026-01-01T10:00:00Z",
+        },
+      ],
+      tasks: [{ status: "ready" }],
+      approvals: [],
+    });
+    expect(stale.find((r) => r.key === "design_accepted")?.met).toBe(false);
+    expect(stale.find((r) => r.key === "plan_accepted")?.met).toBe(false);
+
+    const fresh = gateRequirements("design", {
+      artifacts: [
+        { kind: "prd", status: "accepted", title: "PRD", updatedAt: "2026-01-01T10:00:00Z" },
+        {
+          kind: "acceptance_criteria",
+          status: "accepted",
+          title: "AC",
+          updatedAt: "2026-01-01T10:00:00Z",
+        },
+        { kind: "design", status: "accepted", title: "D", updatedAt: "2026-01-01T11:00:00Z" },
+        { kind: "plan", status: "accepted", title: "P", updatedAt: "2026-01-01T11:00:00Z" },
+        {
+          kind: "security_design",
+          status: "accepted",
+          title: "S",
+          updatedAt: "2026-01-01T10:00:00Z",
+        },
+      ],
+      tasks: [{ status: "ready" }],
+      approvals: [],
+    });
+    expect(fresh.every((r) => r.met)).toBe(true);
+  });
+
   test("coding waits for tasks and security evidence", () => {
     const open = gateRequirements("coding", {
       artifacts: [],
