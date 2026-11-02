@@ -283,6 +283,12 @@ export async function applyActions(
             );
             break;
           }
+          if (a.status === "in_progress") {
+            result.notes.push(
+              "update_task rejected: in_progress is set by the work runner; set ready to queue the task",
+            );
+            break;
+          }
           if (a.status) assertTaskTransition(task.status as TaskStatus, a.status as TaskStatus);
           await db
             .update(tasks)

@@ -148,11 +148,11 @@ async function recoverProjectOrphanedTasks(
   const rows = await db
     .select({ task: tasks, workspaceId: workspaces.id })
     .from(tasks)
-    .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
+    .leftJoin(workspaces, eq(workspaces.taskId, tasks.id))
     .where(and(eq(tasks.projectId, project.id), eq(tasks.status, "in_progress")));
   let recovered = 0;
   for (const row of rows) {
-    if (workQueue.isRunning(row.workspaceId)) continue;
+    if (row.workspaceId && workQueue.isRunning(row.workspaceId)) continue;
     const attempts = Number(row.task.evidence?.["orphanRecoveries"] ?? 0) + 1;
     // Retry a vanished worker, but do not loop forever on a task that keeps
     // killing its run. After three ghost runs, park it for Lead triage.
@@ -814,10 +814,12 @@ export async function recoverOrphanedTasks(): Promise<void> {
   const rows = await db
     .select({ task: tasks, workspace: workspaces })
     .from(tasks)
-    .innerJoin(workspaces, eq(workspaces.taskId, tasks.id))
+    .leftJoin(workspaces, eq(workspaces.taskId, tasks.id))
     .where(eq(tasks.status, "in_progress"));
   for (const row of rows) {
-    if (workQueue.isRunning(row.workspace.id)) continue;
+    // A role can mark a task in_progress without ever starting a workspace.
+    // That ghost blocks the gate forever; left join catches it.
+    if (row.workspace && workQueue.isRunning(row.workspace.id)) continue;
     await db
       .update(tasks)
       .set({
@@ -1030,7 +1032,15 @@ async function postTaskFeedback(projectId: string, taskId: string): Promise<bool
   const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
   const [room] = await db.select().from(rooms).where(eq(rooms.projectId, projectId)).limit(1);
   if (!project || !task || !room) return false;
-  if (!["review", "failed", "blocked"].includes(task.status)) return false;
+  // A workbench reports evidence; "done" can still mean the gate failed.
+  // Without a feedback turn the Lead never sees that result before the
+  // scheduler starts the next (dependent) task.
+  if (
+    !["review", "failed", "blocked"].includes(task.status) &&
+    !(task.mode === "workbench" && task.status === "done")
+  ) {
+    return false;
+  }
 
   const evidence = (task.evidence ?? {}) as Record<string, unknown>;
   const verification = evidence["verification"] as { verdict?: string } | undefined;
@@ -1689,8 +1699,22 @@ export async function autoStartNext(projectId: string): Promise<void> {
     }
 
     let candidate: TaskRow | undefined;
-    for (const task of taskRows) {
-      if (task.status !== "ready") continue;
+    const priorityRank = (priority: string | null | undefined): number =>
+      priority === "high" ? 0 : priority === "low" ? 2 : 1;
+    // Read-only investigation first (it often unblocks code), then priority,
+    // then age. The Lead explicitly asks for this order but cannot encode it
+    // in free text; the scheduler should not make a gate task wait behind a
+    // code task that depends on its result.
+    const readyTasks = taskRows
+      .filter((task) => task.status === "ready")
+      .sort((a, b) => {
+        const mode = Number(a.mode !== "workbench") - Number(b.mode !== "workbench");
+        if (mode) return mode;
+        const priority = priorityRank(a.priority) - priorityRank(b.priority);
+        if (priority) return priority;
+        return a.createdAt.getTime() - b.createdAt.getTime();
+      });
+    for (const task of readyTasks) {
       // Outside coding, only run the read-only tool workbenches (QA walkthrough,
       // security scan, deployment check). Business code changes belong to coding.
       if (project.phase !== "coding" && task.mode !== "workbench") continue;
