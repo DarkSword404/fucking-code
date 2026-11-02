@@ -10,6 +10,7 @@ import {
 import {
   getDb,
   insertMessage,
+  iterations,
   agentRuns,
   approvals,
   artifacts,
@@ -1423,6 +1424,19 @@ async function autoMergeReviewedTask(input: {
       .update(workspaces)
       .set({ status: "merged", updatedAt: new Date() })
       .where(eq(workspaces.id, workspace.id));
+    // Keep the iteration target commit current: the preview badge can then
+    // tell whether the running container is older than the merged code.
+    const [projectRow] = await db
+      .select({ currentIterationId: projects.currentIterationId })
+      .from(projects)
+      .where(eq(projects.id, project.id))
+      .limit(1);
+    if (projectRow?.currentIterationId) {
+      await db
+        .update(iterations)
+        .set({ targetCommit: merged.commit, updatedAt: new Date() })
+        .where(eq(iterations.id, projectRow.currentIterationId));
+    }
 
     void syncProjectRepo(project.id).catch((error) => {
       console.error("[auto-dev] project repo sync failed", error);
