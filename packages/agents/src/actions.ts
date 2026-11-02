@@ -180,6 +180,7 @@ export async function applyActions(
       })),
       tasks: ctx.bundle.tasks.map((x) => ({
         status: x.status,
+        mode: x.mode,
         acceptanceRefs: x.acceptanceRefs,
         gateKey: x.gateKey,
         iterationId: x.iterationId,

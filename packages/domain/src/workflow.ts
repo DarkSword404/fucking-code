@@ -61,6 +61,7 @@ export type PhaseGateContext = {
   tasks: Array<{
     status: string;
     id?: string;
+    mode?: string | null;
     evidence?: Record<string, unknown> | null;
     acceptanceRefs?: string[] | null;
     gateKey?: string | null;
@@ -184,6 +185,10 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
     if (t.id && superseded.has(t.id)) return false;
     return true;
   });
+  // Workbench tasks collect evidence for a gate; they are not coding work.
+  // A pending release/security evidence task must not keep the coding gate
+  // open after all implementation tasks are done.
+  const openCodeTasks = openTasks.filter((task) => task.mode !== "workbench");
 
   switch (phase) {
     case "requirements":
@@ -231,7 +236,7 @@ export function gateRequirements(phase: WorkflowPhase, ctx: PhaseGateContext): G
         {
           key: "tasks_closed",
           label: "所有编码任务已完成或取消",
-          met: tasksInScope.length > 0 && openTasks.length === 0,
+          met: tasksInScope.length > 0 && openCodeTasks.length === 0,
         },
         { key: "sca", label: "SCA 依赖扫描已完成", met: hasAccepted("sca_report") },
         { key: "sast", label: "SAST 静态扫描已完成", met: hasAccepted("sast_report") },

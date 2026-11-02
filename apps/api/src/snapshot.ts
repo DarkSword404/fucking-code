@@ -51,6 +51,7 @@ export async function buildSnapshot(project: ProjectRow): Promise<ProjectSnapsho
     tasks: bundle.tasks.map((t) => ({
       status: t.status,
       id: t.id,
+      mode: t.mode,
       evidence: t.evidence,
       acceptanceRefs: t.acceptanceRefs,
       gateKey: t.gateKey,

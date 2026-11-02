@@ -522,6 +522,7 @@ export async function nudgePhaseProposal(projectId: string, trigger = "gate_sati
       tasks: bundle.tasks.map((t) => ({
         status: t.status,
         id: t.id,
+        mode: t.mode,
         evidence: t.evidence,
         acceptanceRefs: t.acceptanceRefs,
         gateKey: t.gateKey,

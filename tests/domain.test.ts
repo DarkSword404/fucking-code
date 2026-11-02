@@ -253,6 +253,23 @@ describe("workflow gates", () => {
     expect(requirements.find((r) => r.key === "tasks_closed")?.met).toBe(true);
   });
 
+  test("pending workbench evidence does not hold the coding gate open", () => {
+    const requirements = gateRequirements("coding", {
+      artifacts: [
+        { kind: "sca_report", status: "accepted", title: "SCA" },
+        { kind: "sast_report", status: "accepted", title: "SAST" },
+        { kind: "code_audit", status: "accepted", title: "Audit" },
+      ],
+      tasks: [
+        { status: "done", mode: "code", iterationId: "i1" },
+        { status: "ready", mode: "workbench", gateKey: "release_security", iterationId: "i1" },
+      ],
+      approvals: [],
+      iterationId: "i1",
+    });
+    expect(requirements.find((r) => r.key === "tasks_closed")?.met).toBe(true);
+  });
+
   test("coding waits for tasks and security evidence", () => {
     const open = gateRequirements("coding", {
       artifacts: [],

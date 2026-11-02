@@ -2585,6 +2585,7 @@ app.post("/api/v1/projects/:projectId/approvals/:approvalId/decide", async (c) =
       tasks: bundle.tasks.map((t) => ({
         status: t.status,
         id: t.id,
+        mode: t.mode,
         evidence: t.evidence,
         acceptanceRefs: t.acceptanceRefs,
         gateKey: t.gateKey,
@@ -2958,6 +2959,7 @@ app.post("/api/v1/projects/:projectId/advance", async (c) => {
     tasks: bundle.tasks.map((t) => ({
       status: t.status,
       id: t.id,
+      mode: t.mode,
       evidence: t.evidence,
       acceptanceRefs: t.acceptanceRefs,
       gateKey: t.gateKey,
